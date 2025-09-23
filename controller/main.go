@@ -55,12 +55,11 @@ func main() {
 	// --- WebRTC PeerConnectionのセットアップ ---
 	peerConnection, err := webrtc.NewPeerConnection(webrtc.Configuration{
 		ICEServers: []webrtc.ICEServer{
-			{
-				URLs:           []string{"stun:stun.l.google.com:19302", "turn:numb.viagenie.ca:3478"},
-				Username:       "webrtc",
-				Credential:     "webrtc",
-				CredentialType: webrtc.ICECredentialTypePassword,
-			},
+			{URLs: []string{"stun:stun.l.google.com:19302"}},
+			{URLs: []string{"stun:stun1.l.google.com:19302"}},
+			{URLs: []string{"stun:stun2.l.google.com:19302"}},
+			{URLs: []string{"stun:stun3.l.google.com:19302"}},
+			{URLs: []string{"stun:stun4.l.google.com:19302"}},
 		},
 	})
 	if err != nil {
