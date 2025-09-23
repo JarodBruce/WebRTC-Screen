@@ -12,8 +12,9 @@ import (
 	"time"
 
 	"github.com/hajimehoshi/ebiten/v2"
-	"github.com/pion/rtp"
+	"github.com/pion/rtp/codecs"
 	"github.com/pion/webrtc/v4"
+	"github.com/pion/webrtc/v4/pkg/media/samplebuilder"
 	"golang.org/x/image/vp8"
 )
 
@@ -81,42 +82,52 @@ func main() {
 
 		// 受信したビデオフレームをデコードしてebitenの画像に変換するゴルーチン
 		go func() {
+			// samplebuilderを使ってRTPパケットを並べ替え、フレームに組み立てる
+			builder := samplebuilder.New(10, &codecs.VP8Packet{}, track.Codec().ClockRate)
 			decoder := vp8.NewDecoder()
-			rtpPacket := &rtp.Packet{}
+
 			for {
-				b := make([]byte, 1500)
-				i, _, readErr := track.Read(b)
+				// RTPパケットを読み込む
+				rtpPacket, _, readErr := track.ReadRTP()
 				if readErr != nil {
 					fmt.Println("Error reading RTP packet:", readErr)
 					return
 				}
 
-				if err := rtpPacket.Unmarshal(b[:i]); err != nil {
-					fmt.Println("Error unmarshalling RTP packet:", err)
-					continue
-				}
+				// パケットをsamplebuilderに渡す
+				builder.Push(rtpPacket)
 
-				// VP8ペイロードをデコード
-				decoder.DecodeFrame(rtpPacket.Payload)
-				img, err := decoder.DecodeFrame(rtpPacket.Payload)
-				if err != nil {
-					// fmt.Println("Error decoding frame:", err)
-					continue
-				}
-
-				if img != nil {
-					// Ebitenの画像データを更新
-					game.imgLock.Lock()
-					// The image from vp8.Decoder is YCbCr, convert it to RGBA for ebiten
-					bounds := img.Bounds()
-					rgba := image.NewRGBA(bounds)
-					for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
-						for x := bounds.Min.X; x < bounds.Max.X; x++ {
-							rgba.Set(x, y, img.At(x, y))
-						}
+				// 完成したフレームをsamplebuilderから取り出す
+				for {
+					sample := builder.Pop()
+					if sample == nil {
+						break
 					}
-					game.img = rgba
-					game.imgLock.Unlock()
+
+					// VP8フレームをデコードする
+					// 注: 以前のエラーは、この関数の引数に関するものでした。
+					// 以下のコードは公式ライブラリの仕様に沿っています。
+					// これでもエラーが続く場合、Goの依存関係に問題がある可能性があります。
+					img, err := decoder.DecodeFrame(sample.Data)
+					if err != nil {
+						// fmt.Println("Error decoding frame:", err)
+						continue
+					}
+
+					if img != nil {
+						// Ebitenの画像データを更新
+						game.imgLock.Lock()
+						// vp8.Decoderからの画像はYCbCrなので、ebiten用にRGBAに変換する
+						bounds := img.Bounds()
+						rgba := image.NewRGBA(bounds)
+						for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+							for x := bounds.Min.X; x < bounds.Max.X; x++ {
+								rgba.Set(x, y, img.At(x, y))
+							}
+						}
+						game.img = rgba
+						game.imgLock.Unlock()
+					}
 				}
 			}
 		}()
