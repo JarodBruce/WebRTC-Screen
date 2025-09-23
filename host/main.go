@@ -1,21 +1,17 @@
 package main
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"image"
 	"os"
 	"time"
 
-	"github.com/pion/mediadevices"
-	"github.com/pion/mediadevices/pkg/codec/vpx"
-	"github.com/pion/mediadevices/pkg/frame"
-	"github.com/pion/mediadevices/pkg/prop"
-	"github.com/pion/webrtc/v3"
-
-	_ "github.com/pion/mediadevices/pkg/driver/screen" // screen driver
+	"github.com/kbinani/screenshot"
+	"github.com/pion/webrtc/v4"
+	"github.com/pion/webrtc/v4/pkg/media"
 )
 
 func main() {
@@ -25,11 +21,7 @@ func main() {
 	// --- WebRTC PeerConnectionのセットアップ ---
 	peerConnection, err := webrtc.NewPeerConnection(webrtc.Configuration{
 		ICEServers: []webrtc.ICEServer{
-			{URLs: []string{"stun:stun.l.google.com:19302"}},
-			{URLs: []string{"stun:stun1.l.google.com:19302"}},
-			{URLs: []string{"stun:stun2.l.google.com:19302"}},
-			{URLs: []string{"stun:stun3.l.google.com:19302"}},
-			{URLs: []string{"stun:stun4.l.google.com:19302"}},
+			{URLs: []string{"stun:stun.l.google.com:1932"}},
 		},
 	})
 	if err != nil {
@@ -41,37 +33,26 @@ func main() {
 		}
 	}()
 
-	// --- ビデオトラックの作成 (mediadevicesを使用) ---
-	vpxParams, err := vpx.NewVP8Params()
+	// --- ビデオトラックの作成 ---
+	videoTrack, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8}, "video", "pion")
 	if err != nil {
 		panic(err)
 	}
-	vpxParams.BitRate = 500_000 // 500kbps
-
-	codecSelector := mediadevices.NewCodecSelector(
-		mediadevices.WithVideoEncoders(&vpxParams),
-	)
-
-	mediaStream, err := mediadevices.GetDisplayMedia(mediadevices.MediaStreamConstraints{
-		Video: func(c *mediadevices.MediaTrackConstraints) {
-			c.FrameFormat = prop.FrameFormat(frame.FormatYUY2)
-			c.Width = prop.Int(1280)
-			c.Height = prop.Int(720)
-		},
-		Codec: codecSelector,
-	})
+	rtpSender, err := peerConnection.AddTrack(videoTrack)
 	if err != nil {
 		panic(err)
 	}
-
-	track, ok := mediaStream.GetVideoTracks()[0].(*mediadevices.VideoTrack)
-	if !ok {
-		panic("Track is not a video track")
-	}
-	_, err = peerConnection.AddTrack(track)
-	if err != nil {
-		panic(err)
-	}
+	// Read incoming RTCP packets
+	// Before these packets are returned they are processed by interceptors. For things
+	// like NACK this needs to be called.
+	go func() {
+		rtcpBuf := make([]byte, 1500)
+		for {
+			if _, _, rtcpErr := rtpSender.Read(rtcpBuf); rtcpErr != nil {
+				return
+			}
+		}
+	}()
 
 	// --- シグナリング (オファーの生成とアンサーの待機) ---
 	offer, err := peerConnection.CreateOffer(nil)
@@ -85,7 +66,7 @@ func main() {
 	<-gatherComplete
 
 	fmt.Println("--- Offer (copy this to the controller's offer file) ---")
-	fmt.Println(Encode(offer))
+	fmt.Println(Encode(*peerConnection.LocalDescription()))
 	fmt.Println("----------------------------------------------------------")
 
 	// answer.txt が作成されるのを待つ
@@ -116,11 +97,58 @@ func main() {
 		}
 		if s == webrtc.PeerConnectionStateConnected {
 			fmt.Println("Connection established! Starting screen capture...")
+			// --- 画面キャプチャとビデオ送信のループ ---
+			go func() {
+				ticker := time.NewTicker(33 * time.Millisecond) // ~30 FPS
+				for range ticker.C {
+					bounds := screenshot.GetDisplayBounds(0)
+					img, err := screenshot.CaptureRect(bounds)
+					if err != nil {
+						// fmt.Println("Error capturing screen:", err)
+						continue
+					}
+
+					// image.RGBA を image.YCbCr に変換
+					ycbcrImg := toYCbCr(img)
+
+					// WriteSampleに渡すデータはYCbCrのYプレーン（輝度）のみで良い場合がある
+					// VP8エンコーダは内部で色差情報も扱うが、APIとしては輝度プレーンのバイトスライスを渡す
+					if err := videoTrack.WriteSample(media.Sample{Data: ycbcrImg.Y, Duration: time.Second / 30}); err != nil {
+						// fmt.Println("Error writing sample:", err)
+					}
+				}
+			}()
 		}
 	})
 
 	// アプリケーションが終了しないように待機
-	<-context.Background().Done()
+	select {}
+}
+
+// toYCbCr converts image.RGBA to image.YCbCr.
+func toYCbCr(img *image.RGBA) *image.YCbCr {
+	bounds := img.Bounds()
+	ycbcr := image.NewYCbCr(bounds, image.YCbCrSubsampleRatio420)
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			r, g, b, _ := img.At(x, y).RGBA()
+			r8, g8, b8 := uint8(r>>8), uint8(g>>8), uint8(b>>8)
+
+			Y := 0.299*float64(r8) + 0.587*float64(g8) + 0.114*float64(b8)
+			Cb := 128 - 0.168736*float64(r8) - 0.331264*float64(g8) + 0.5*float64(b8)
+			Cr := 128 + 0.5*float64(r8) - 0.418688*float64(g8) - 0.081312*float64(b8)
+
+			yi := y*ycbcr.YStride + x
+			ci := (y/2)*ycbcr.CStride + (x / 2)
+
+			ycbcr.Y[yi] = uint8(Y)
+			if x%2 == 0 && y%2 == 0 {
+				ycbcr.Cb[ci] = uint8(Cb)
+				ycbcr.Cr[ci] = uint8(Cr)
+			}
+		}
+	}
+	return ycbcr
 }
 
 // --- シグナリング情報 (SDP) をエンコード/デコードするためのヘルパー関数 ---

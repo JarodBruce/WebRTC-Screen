@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/hajimehoshi/ebiten/v2"
-	"github.com/pion/mediadevices/pkg/codec/vpx"
 	"github.com/pion/rtp"
-	"github.com/pion/webrtc/v3"
+	"github.com/pion/webrtc/v4"
+	"golang.org/x/image/vp8"
 )
 
 const (
@@ -81,18 +81,14 @@ func main() {
 
 		// 受信したビデオフレームをデコードしてebitenの画像に変換するゴルーチン
 		go func() {
-			// VP8デコーダの準備
-			decoder, err := vpx.NewVP8Decoder()
-			if err != nil {
-				panic(err)
-			}
+			decoder := vp8.NewDecoder()
 			rtpPacket := &rtp.Packet{}
 			for {
 				b := make([]byte, 1500)
 				i, _, readErr := track.Read(b)
 				if readErr != nil {
 					fmt.Println("Error reading RTP packet:", readErr)
-					return // Exit goroutine on error
+					return
 				}
 
 				if err := rtpPacket.Unmarshal(b[:i]); err != nil {
@@ -100,24 +96,28 @@ func main() {
 					continue
 				}
 
-				img, err := decoder.Decode(rtpPacket.Payload)
+				// VP8ペイロードをデコード
+				decoder.DecodeFrame(rtpPacket.Payload)
+				img, err := decoder.DecodeFrame(rtpPacket.Payload)
 				if err != nil {
-					// log.Printf("decode error: %s", err)
+					// fmt.Println("Error decoding frame:", err)
 					continue
 				}
 
-				// Ebitenの画像データを更新
-				game.imgLock.Lock()
-				// mediadevicesのデコーダは *image.YCbCr を返すので、RGBAに変換する
-				bounds := img.Bounds()
-				rgba := image.NewRGBA(bounds)
-				for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
-					for x := bounds.Min.X; x < bounds.Max.X; x++ {
-						rgba.Set(x, y, img.At(x, y))
+				if img != nil {
+					// Ebitenの画像データを更新
+					game.imgLock.Lock()
+					// The image from vp8.Decoder is YCbCr, convert it to RGBA for ebiten
+					bounds := img.Bounds()
+					rgba := image.NewRGBA(bounds)
+					for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+						for x := bounds.Min.X; x < bounds.Max.X; x++ {
+							rgba.Set(x, y, img.At(x, y))
+						}
 					}
+					game.img = rgba
+					game.imgLock.Unlock()
 				}
-				game.img = rgba
-				game.imgLock.Unlock()
 			}
 		}()
 	})
