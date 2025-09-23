@@ -12,10 +12,10 @@ import (
 	"time"
 
 	"github.com/hajimehoshi/ebiten/v2"
+	"github.com/pion/mediadevices/pkg/codec/vpx"
 	"github.com/pion/rtp/codecs"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media/samplebuilder"
-	"golang.org/x/image/vp8"
 )
 
 const (
@@ -84,7 +84,10 @@ func main() {
 		go func() {
 			// samplebuilderを使ってRTPパケットを並べ替え、フレームに組み立てる
 			builder := samplebuilder.New(10, &codecs.VP8Packet{}, track.Codec().ClockRate)
-			decoder := vp8.NewDecoder()
+			decoder, err := vpx.NewVP8Decoder()
+			if err != nil {
+				panic(err)
+			}
 
 			for {
 				// RTPパケットを読み込む
@@ -105,10 +108,7 @@ func main() {
 					}
 
 					// VP8フレームをデコードする
-					// 注: 以前のエラーは、この関数の引数に関するものでした。
-					// 以下のコードは公式ライブラリの仕様に沿っています。
-					// これでもエラーが続く場合、Goの依存関係に問題がある可能性があります。
-					img, err := decoder.DecodeFrame(sample.Data)
+					img, err := decoder.Decode(sample.Data)
 					if err != nil {
 						// fmt.Println("Error decoding frame:", err)
 						continue
@@ -117,7 +117,8 @@ func main() {
 					if img != nil {
 						// Ebitenの画像データを更新
 						game.imgLock.Lock()
-						// vp8.Decoderからの画像はYCbCrなので、ebiten用にRGBAに変換する
+						// デコードされた画像は image.Image インターフェース (実体は *image.YCbCr)
+						// ebiten用にRGBAに変換する
 						bounds := img.Bounds()
 						rgba := image.NewRGBA(bounds)
 						for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
