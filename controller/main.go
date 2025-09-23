@@ -90,13 +90,12 @@ func main() {
 	})
 
 	// --- シグナリング (オファーの待機とアンサーの生成) ---
-	fmt.Println("Waiting for offer.sdp...")
+	fmt.Println("Paste the Offer from the host into offer.txt and save it.")
 	var offerBytes []byte
 	for {
-		offerBytes, err = os.ReadFile("offer.sdp")
-		if err == nil {
-			// ファイルを削除して、次回起動時に古いファイルを使用しないようにする
-			os.Remove("offer.sdp")
+		offerBytes, err = os.ReadFile("offer.txt")
+		if err == nil && len(offerBytes) > 0 {
+			os.Remove("offer.txt") // ファイルを削除
 			break
 		}
 		time.Sleep(1 * time.Second)
@@ -120,13 +119,9 @@ func main() {
 	}
 	// <-gatherComplete // This was unused
 
-	// アンサーをファイルに書き出す
-	answerString := Encode(*peerConnection.LocalDescription())
-	err = os.WriteFile("answer.sdp", []byte(answerString), 0644)
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println("Answer written to answer.sdp. Connection should be established on the host.")
+	fmt.Println("--- Answer (copy this to the host's answer.txt) ---")
+	fmt.Println(Encode(*peerConnection.LocalDescription()))
+	fmt.Println("----------------------------------------------------")
 
 	// --- 接続状態の監視 ---
 	peerConnection.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
@@ -159,6 +154,7 @@ func Decode(in string, obj interface{}) {
 	b, err := base64.StdEncoding.DecodeString(in)
 	if err != nil {
 		panic(err)
+
 	}
 	err = json.Unmarshal(b, obj)
 	if err != nil {

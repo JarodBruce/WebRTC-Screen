@@ -52,22 +52,17 @@ func main() {
 	}
 	<-gatherComplete
 
-	// オファーをファイルに書き出す
-	offerString := Encode(offer)
-	err = os.WriteFile("offer.sdp", []byte(offerString), 0644)
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println("Offer written to offer.sdp. Please start the controller.")
+	fmt.Println("--- Offer (copy this to the controller's offer.txt) ---")
+	fmt.Println(Encode(offer))
+	fmt.Println("----------------------------------------------------------")
 
-	// アンサーがファイルに書き込まれるのを待つ
-	fmt.Println("Waiting for answer.sdp...")
+	// answer.txt が作成されるのを待つ
+	fmt.Println("Paste the Answer from the controller into answer.txt and save it.")
 	var answerBytes []byte
 	for {
-		answerBytes, err = os.ReadFile("answer.sdp")
-		if err == nil {
-			// ファイルを削除して、次回起動時に古いファイルを使用しないようにする
-			os.Remove("answer.sdp")
+		answerBytes, err = os.ReadFile("answer.txt")
+		if err == nil && len(answerBytes) > 0 {
+			os.Remove("answer.txt") // ファイルを削除
 			break
 		}
 		time.Sleep(1 * time.Second)
