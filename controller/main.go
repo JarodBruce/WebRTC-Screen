@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"image"
 	"os"
@@ -46,6 +47,9 @@ func (g *Game) Layout(outsideWidth, outsideHeight int) (int, int) {
 }
 
 func main() {
+	offerFilePath := flag.String("offer-file", "offer.txt", "Path to the offer file")
+	flag.Parse()
+
 	game := &Game{}
 
 	// --- WebRTC PeerConnectionのセットアップ ---
@@ -90,12 +94,12 @@ func main() {
 	})
 
 	// --- シグナリング (オファーの待機とアンサーの生成) ---
-	fmt.Println("Paste the Offer from the host into offer.txt and save it.")
+	fmt.Printf("Paste the Offer from the host into %s and save it.\n", *offerFilePath)
 	var offerBytes []byte
 	for {
-		offerBytes, err = os.ReadFile("offer.txt")
+		offerBytes, err = os.ReadFile(*offerFilePath)
 		if err == nil && len(offerBytes) > 0 {
-			os.Remove("offer.txt") // ファイルを削除
+			os.Remove(*offerFilePath) // ファイルを削除
 			break
 		}
 		time.Sleep(1 * time.Second)
@@ -119,7 +123,7 @@ func main() {
 	}
 	// <-gatherComplete // This was unused
 
-	fmt.Println("--- Answer (copy this to the host's answer.txt) ---")
+	fmt.Println("--- Answer (copy this to the host's answer file) ---")
 	fmt.Println(Encode(*peerConnection.LocalDescription()))
 	fmt.Println("----------------------------------------------------")
 

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"image"
 	"os"
@@ -14,6 +15,9 @@ import (
 )
 
 func main() {
+	answerFilePath := flag.String("answer-file", "answer.txt", "Path to the answer file")
+	flag.Parse()
+
 	// --- WebRTC PeerConnectionのセットアップ ---
 	peerConnection, err := webrtc.NewPeerConnection(webrtc.Configuration{
 		ICEServers: []webrtc.ICEServer{
@@ -52,17 +56,17 @@ func main() {
 	}
 	<-gatherComplete
 
-	fmt.Println("--- Offer (copy this to the controller's offer.txt) ---")
+	fmt.Println("--- Offer (copy this to the controller's offer file) ---")
 	fmt.Println(Encode(offer))
 	fmt.Println("----------------------------------------------------------")
 
 	// answer.txt が作成されるのを待つ
-	fmt.Println("Paste the Answer from the controller into answer.txt and save it.")
+	fmt.Printf("Paste the Answer from the controller into %s and save it.\n", *answerFilePath)
 	var answerBytes []byte
 	for {
-		answerBytes, err = os.ReadFile("answer.txt")
+		answerBytes, err = os.ReadFile(*answerFilePath)
 		if err == nil && len(answerBytes) > 0 {
-			os.Remove("answer.txt") // ファイルを削除
+			os.Remove(*answerFilePath) // ファイルを削除
 			break
 		}
 		time.Sleep(1 * time.Second)
