@@ -21,9 +21,9 @@ func main() {
 	// --- WebRTC PeerConnectionのセットアップ ---
 	peerConnection, err := webrtc.NewPeerConnection(webrtc.Configuration{
 		ICEServers: []webrtc.ICEServer{
-			{
-				URLs: []string{"stun:stun.l.google.com:19302"},
-			},
+			{URLs: []string{"stun:stun.l.google.com:19302"}},
+			{URLs: []string{"stun:stun1.l.google.com:19302"}},
+			{URLs: []string{"stun:stun.services.mozilla.com:3478"}},
 		},
 	})
 	if err != nil {

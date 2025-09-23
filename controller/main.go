@@ -55,9 +55,9 @@ func main() {
 	// --- WebRTC PeerConnectionのセットアップ ---
 	peerConnection, err := webrtc.NewPeerConnection(webrtc.Configuration{
 		ICEServers: []webrtc.ICEServer{
-			{
-				URLs: []string{"stun:stun.l.google.com:19302"},
-			},
+			{URLs: []string{"stun:stun.l.google.com:19302"}},
+			{URLs: []string{"stun:stun1.l.google.com:19302"}},
+			{URLs: []string{"stun:stun.services.mozilla.com:3478"}},
 		},
 	})
 	if err != nil {
@@ -117,11 +117,11 @@ func main() {
 		panic(err)
 	}
 
-	// gatherComplete := webrtc.GatheringCompletePromise(peerConnection) // This was unused
+	gatherComplete := webrtc.GatheringCompletePromise(peerConnection)
 	if err = peerConnection.SetLocalDescription(answer); err != nil {
 		panic(err)
 	}
-	// <-gatherComplete // This was unused
+	<-gatherComplete
 
 	fmt.Println("--- Answer (copy this to the host's answer file) ---")
 	fmt.Println(Encode(*peerConnection.LocalDescription()))
