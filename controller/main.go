@@ -1,15 +1,14 @@
 package main
 
 import (
-	"bufio"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"image"
-	"io"
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/pion/webrtc/v3"
@@ -91,9 +90,20 @@ func main() {
 	})
 
 	// --- シグナリング (オファーの待機とアンサーの生成) ---
-	fmt.Println("Paste the Offer from the host below:")
+	fmt.Println("Waiting for offer.sdp...")
+	var offerBytes []byte
+	for {
+		offerBytes, err = os.ReadFile("offer.sdp")
+		if err == nil {
+			// ファイルを削除して、次回起動時に古いファイルを使用しないようにする
+			os.Remove("offer.sdp")
+			break
+		}
+		time.Sleep(1 * time.Second)
+	}
+
 	offer := webrtc.SessionDescription{}
-	Decode(MustReadStdin(), &offer)
+	Decode(string(offerBytes), &offer)
 
 	if err = peerConnection.SetRemoteDescription(offer); err != nil {
 		panic(err)
@@ -110,9 +120,14 @@ func main() {
 	}
 	// <-gatherComplete // This was unused
 
-	fmt.Println("--- Answer (copy this to the host) ---")
-	fmt.Println(Encode(*peerConnection.LocalDescription()))
-	fmt.Println("---------------------------------------")
+	// アンサーをファイルに書き出す
+	answerString := Encode(*peerConnection.LocalDescription())
+	err = os.WriteFile("answer.sdp", []byte(answerString), 0644)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("Answer written to answer.sdp. Connection should be established on the host.")
+
 	// --- 接続状態の監視 ---
 	peerConnection.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
 		fmt.Printf("Peer Connection State has changed: %s\n", s.String())
@@ -140,31 +155,13 @@ func Encode(obj interface{}) string {
 	return base64.StdEncoding.EncodeToString(b)
 }
 
-func Decode(s string, obj interface{}) {
-	b, err := base64.StdEncoding.DecodeString(s)
+func Decode(in string, obj interface{}) {
+	b, err := base64.StdEncoding.DecodeString(in)
 	if err != nil {
 		panic(err)
 	}
-	if err := json.Unmarshal(b, obj); err != nil {
+	err = json.Unmarshal(b, obj)
+	if err != nil {
 		panic(err)
 	}
-}
-
-func MustReadStdin() string {
-	r := bufio.NewReader(os.Stdin)
-	var in string
-	for {
-		var err error
-		in, err = r.ReadString('\n')
-		if err != io.EOF {
-			if err != nil {
-				panic(err)
-			}
-		}
-		in = strings.TrimSpace(in)
-		if len(in) > 0 {
-			break
-		}
-	}
-	return in
 }

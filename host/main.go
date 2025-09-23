@@ -1,14 +1,11 @@
 package main
 
 import (
-	"bufio"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"image"
-	"io"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/kbinani/screenshot"
@@ -55,13 +52,29 @@ func main() {
 	}
 	<-gatherComplete
 
-	fmt.Println("--- Offer (copy this to the controller) ---")
-	fmt.Println(Encode(offer))
-	fmt.Println("-------------------------------------------")
+	// オファーをファイルに書き出す
+	offerString := Encode(offer)
+	err = os.WriteFile("offer.sdp", []byte(offerString), 0644)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("Offer written to offer.sdp. Please start the controller.")
 
-	fmt.Println("Paste the Answer from the controller below:")
+	// アンサーがファイルに書き込まれるのを待つ
+	fmt.Println("Waiting for answer.sdp...")
+	var answerBytes []byte
+	for {
+		answerBytes, err = os.ReadFile("answer.sdp")
+		if err == nil {
+			// ファイルを削除して、次回起動時に古いファイルを使用しないようにする
+			os.Remove("answer.sdp")
+			break
+		}
+		time.Sleep(1 * time.Second)
+	}
+
 	answer := webrtc.SessionDescription{}
-	Decode(MustReadStdin(), &answer)
+	Decode(string(answerBytes), &answer)
 
 	if err = peerConnection.SetRemoteDescription(answer); err != nil {
 		panic(err)
@@ -140,23 +153,4 @@ func Decode(in string, obj interface{}) {
 	if err != nil {
 		panic(err)
 	}
-}
-
-func MustReadStdin() string {
-	r := bufio.NewReader(os.Stdin)
-	var in string
-	for {
-		var err error
-		in, err = r.ReadString('\n')
-		if err != io.EOF {
-			if err != nil {
-				panic(err)
-			}
-		}
-		in = strings.TrimSpace(in)
-		if len(in) > 0 {
-			break
-		}
-	}
-	return in
 }
