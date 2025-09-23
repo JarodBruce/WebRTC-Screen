@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/hajimehoshi/ebiten/v2"
+	"github.com/pion/mediadevices/pkg/codec/vpx"
+	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v3"
 )
 
@@ -79,18 +81,43 @@ func main() {
 
 		// 受信したビデオフレームをデコードしてebitenの画像に変換するゴルーチン
 		go func() {
-			// ticker := new(time.Ticker) // This was unused
-			// This is a very basic example of how to handle frames.
-			// In a real-world application, you would want to use a more robust solution.
-			// For example, you would want to handle packet loss and out-of-order packets.
-			// You would also want to use a jitter buffer.
+			// VP8デコーダの準備
+			decoder, err := vpx.NewVP8Decoder()
+			if err != nil {
+				panic(err)
+			}
+			rtpPacket := &rtp.Packet{}
 			for {
-				_, _, readErr := track.ReadRTP()
+				b := make([]byte, 1500)
+				i, _, readErr := track.Read(b)
 				if readErr != nil {
-					// handle error
+					fmt.Println("Error reading RTP packet:", readErr)
 					return // Exit goroutine on error
 				}
-				// Frame handling logic will be implemented here.
+
+				if err := rtpPacket.Unmarshal(b[:i]); err != nil {
+					fmt.Println("Error unmarshalling RTP packet:", err)
+					continue
+				}
+
+				img, err := decoder.Decode(rtpPacket.Payload)
+				if err != nil {
+					// log.Printf("decode error: %s", err)
+					continue
+				}
+
+				// Ebitenの画像データを更新
+				game.imgLock.Lock()
+				// mediadevicesのデコーダは *image.YCbCr を返すので、RGBAに変換する
+				bounds := img.Bounds()
+				rgba := image.NewRGBA(bounds)
+				for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+					for x := bounds.Min.X; x < bounds.Max.X; x++ {
+						rgba.Set(x, y, img.At(x, y))
+					}
+				}
+				game.img = rgba
+				game.imgLock.Unlock()
 			}
 		}()
 	})

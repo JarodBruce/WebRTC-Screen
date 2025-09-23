@@ -1,17 +1,21 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"image"
 	"os"
 	"time"
 
-	"github.com/kbinani/screenshot"
+	"github.com/pion/mediadevices"
+	"github.com/pion/mediadevices/pkg/codec/vpx"
+	"github.com/pion/mediadevices/pkg/frame"
+	"github.com/pion/mediadevices/pkg/prop"
 	"github.com/pion/webrtc/v3"
-	"github.com/pion/webrtc/v3/pkg/media"
+
+	_ "github.com/pion/mediadevices/pkg/driver/screen" // screen driver
 )
 
 func main() {
@@ -37,12 +41,34 @@ func main() {
 		}
 	}()
 
-	// --- ビデオトラックの作成 ---
-	videoTrack, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: "video/vp8"}, "video", "pion")
+	// --- ビデオトラックの作成 (mediadevicesを使用) ---
+	vpxParams, err := vpx.NewVP8Params()
 	if err != nil {
 		panic(err)
 	}
-	_, err = peerConnection.AddTrack(videoTrack)
+	vpxParams.BitRate = 500_000 // 500kbps
+
+	codecSelector := mediadevices.NewCodecSelector(
+		mediadevices.WithVideoEncoders(&vpxParams),
+	)
+
+	mediaStream, err := mediadevices.GetDisplayMedia(mediadevices.MediaStreamConstraints{
+		Video: func(c *mediadevices.MediaTrackConstraints) {
+			c.FrameFormat = prop.FrameFormat(frame.FormatYUY2)
+			c.Width = prop.Int(1280)
+			c.Height = prop.Int(720)
+		},
+		Codec: codecSelector,
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	track, ok := mediaStream.GetVideoTracks()[0].(*mediadevices.VideoTrack)
+	if !ok {
+		panic("Track is not a video track")
+	}
+	_, err = peerConnection.AddTrack(track)
 	if err != nil {
 		panic(err)
 	}
@@ -88,51 +114,13 @@ func main() {
 			fmt.Println("Peer Connection has failed. Exiting")
 			os.Exit(0)
 		}
+		if s == webrtc.PeerConnectionStateConnected {
+			fmt.Println("Connection established! Starting screen capture...")
+		}
 	})
 
-	fmt.Println("Connection established! Starting screen capture...")
-
-	// --- 画面キャプチャとビデオ送信のループ ---
-	go func() {
-		ticker := time.NewTicker(33 * time.Millisecond) // ~30 FPS
-		for range ticker.C {
-			bounds := screenshot.GetDisplayBounds(0) // プライマリディスプレイを取得
-			img, err := screenshot.CaptureRect(bounds)
-			if err != nil {
-				fmt.Println("Error capturing screen:", err)
-				continue
-			}
-
-			// image.RGBA を image.YCbCr に変換 (VP8エンコーダが要求するフォーマット)
-			ycbcrImg := image.NewYCbCr(img.Bounds(), image.YCbCrSubsampleRatio420)
-			for y := 0; y < img.Bounds().Dy(); y++ {
-				for x := 0; x < img.Bounds().Dx(); x++ {
-					r, g, b, _ := img.At(x, y).RGBA()
-					// RGBA to YCbCr conversion
-					// Note: This is a simplified conversion. For production, use a proper library.
-					Y := (0.299*float64(r>>8) + 0.587*float64(g>>8) + 0.114*float64(b>>8))
-					Cb := 128 + (-0.168736*float64(r>>8) - 0.331264*float64(g>>8) + 0.5*float64(b>>8))
-					Cr := 128 + (0.5*float64(r>>8) - 0.418688*float64(g>>8) - 0.081312*float64(b>>8))
-
-					ycbcrImg.Y[y*ycbcrImg.YStride+x] = uint8(Y)
-					if y%2 == 0 && x%2 == 0 {
-						uvIndex := (y/2)*ycbcrImg.CStride + (x / 2)
-						ycbcrImg.Cb[uvIndex] = uint8(Cb)
-						ycbcrImg.Cr[uvIndex] = uint8(Cr)
-					}
-				}
-			}
-
-			if err := videoTrack.WriteSample(media.Sample{Data: ycbcrImg.Y, Duration: time.Second}); err != nil {
-				// This is a simplified way to send frames. A real implementation would need to handle frame timing and partitioning correctly.
-				// For now, we just log the error and continue.
-				// fmt.Println("Error writing sample:", err)
-			}
-		}
-	}()
-
 	// アプリケーションが終了しないように待機
-	select {}
+	<-context.Background().Done()
 }
 
 // --- シグナリング情報 (SDP) をエンコード/デコードするためのヘルパー関数 ---
