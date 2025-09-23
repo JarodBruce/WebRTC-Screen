@@ -99,16 +99,15 @@ func main() {
 					Y := (0.299*float64(r>>8) + 0.587*float64(g>>8) + 0.114*float64(b>>8))
 					Cb := 128 + (-0.168736*float64(r>>8) - 0.331264*float64(g>>8) + 0.5*float64(b>>8))
 					Cr := 128 + (0.5*float64(r>>8) - 0.418688*float64(g>>8) - 0.081312*float64(b>>8))
-					
+
 					ycbcrImg.Y[y*ycbcrImg.YStride+x] = uint8(Y)
 					if y%2 == 0 && x%2 == 0 {
-						uvIndex := (y/2)*ycbcrImg.CStride + (x/2)
+						uvIndex := (y/2)*ycbcrImg.CStride + (x / 2)
 						ycbcrImg.Cb[uvIndex] = uint8(Cb)
 						ycbcrImg.Cr[uvIndex] = uint8(Cr)
 					}
 				}
 			}
-
 
 			if err := videoTrack.WriteSample(media.Sample{Data: ycbcrImg.Y, Duration: time.Second}); err != nil {
 				// This is a simplified way to send frames. A real implementation would need to handle frame timing and partitioning correctly.

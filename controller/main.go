@@ -72,47 +72,47 @@ func main() {
 		codecName := strings.Split(track.Codec().MimeType, "/")[1]
 		fmt.Printf("Codec: %s\n", codecName)
 
-		        // 受信したビデオフレームをデコードしてebitenの画像に変換するゴルーチン
-				go func() {
-					// ticker := new(time.Ticker) // This was unused
-					// This is a very basic example of how to handle frames.
-					// In a real-world application, you would want to use a more robust solution.
-					// For example, you would want to handle packet loss and out-of-order packets.
-					// You would also want to use a jitter buffer.
-					for {
-						_, _, readErr := track.ReadRTP()
-						if readErr != nil {
-							// handle error
-							return // Exit goroutine on error
-						}
-						// Frame handling logic will be implemented here.
-					}
-				}()
-			})
-		
-			// --- シグナリング (オファーの待機とアンサーの生成) ---
-			fmt.Println("Paste the Offer from the host below:")
-			offer := webrtc.SessionDescription{}
-			Decode(MustReadStdin(), &offer)
-		
-			if err = peerConnection.SetRemoteDescription(offer); err != nil {
-				panic(err)
+		// 受信したビデオフレームをデコードしてebitenの画像に変換するゴルーチン
+		go func() {
+			// ticker := new(time.Ticker) // This was unused
+			// This is a very basic example of how to handle frames.
+			// In a real-world application, you would want to use a more robust solution.
+			// For example, you would want to handle packet loss and out-of-order packets.
+			// You would also want to use a jitter buffer.
+			for {
+				_, _, readErr := track.ReadRTP()
+				if readErr != nil {
+					// handle error
+					return // Exit goroutine on error
+				}
+				// Frame handling logic will be implemented here.
 			}
-		
-			answer, err := peerConnection.CreateAnswer(nil)
-			if err != nil {
-				panic(err)
-			}
-		
-			// gatherComplete := webrtc.GatheringCompletePromise(peerConnection) // This was unused
-			if err = peerConnection.SetLocalDescription(answer); err != nil {
-				panic(err)
-			}
-			// <-gatherComplete // This was unused
-		
-			fmt.Println("--- Answer (copy this to the host) ---")
-			fmt.Println(Encode(*peerConnection.LocalDescription()))
-			fmt.Println("---------------------------------------")
+		}()
+	})
+
+	// --- シグナリング (オファーの待機とアンサーの生成) ---
+	fmt.Println("Paste the Offer from the host below:")
+	offer := webrtc.SessionDescription{}
+	Decode(MustReadStdin(), &offer)
+
+	if err = peerConnection.SetRemoteDescription(offer); err != nil {
+		panic(err)
+	}
+
+	answer, err := peerConnection.CreateAnswer(nil)
+	if err != nil {
+		panic(err)
+	}
+
+	// gatherComplete := webrtc.GatheringCompletePromise(peerConnection) // This was unused
+	if err = peerConnection.SetLocalDescription(answer); err != nil {
+		panic(err)
+	}
+	// <-gatherComplete // This was unused
+
+	fmt.Println("--- Answer (copy this to the host) ---")
+	fmt.Println(Encode(*peerConnection.LocalDescription()))
+	fmt.Println("---------------------------------------")
 	// --- 接続状態の監視 ---
 	peerConnection.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
 		fmt.Printf("Peer Connection State has changed: %s\n", s.String())
@@ -140,13 +140,12 @@ func Encode(obj interface{}) string {
 	return base64.StdEncoding.EncodeToString(b)
 }
 
-func Decode(in string, obj interface{}) {
-	b, err := base64.StdEncoding.DecodeString(in)
+func Decode(s string, obj interface{}) {
+	b, err := base64.StdEncoding.DecodeString(s)
 	if err != nil {
 		panic(err)
 	}
-	err = json.Unmarshal(b, obj)
-	if err != nil {
+	if err := json.Unmarshal(b, obj); err != nil {
 		panic(err)
 	}
 }
