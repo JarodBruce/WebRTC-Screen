@@ -34,9 +34,12 @@ On Windows (the peer that streams desktop):
 ```powershell
 $Env:MODE = "peer"
 go run .
-# It will print: "Paste base64 Offer ..."
-# Right-click to paste the Offer (base64) and press Enter
-# It will then print an "Answer (base64)" line
+# You'll see a prompt:
+#   Paste Offer (base64) from browser. End with an empty line or type END on a new line:
+# Paste the Offer (base64). Finish by entering a blank line or typing END.
+# The program will then print:
+#   Answer (base64) — copy this back into the browser:
+# Copy that entire base64 string back into the page's "Paste Answer" box and click "Set Answer".
 ```
 
 Back on macOS browser:

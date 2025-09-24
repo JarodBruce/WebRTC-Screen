@@ -282,11 +282,10 @@ func runPeer(fps, quality, display int) error {
 		}
 	})
 
-	// Read remote offer (base64 JSON of SessionDescription)
-	fmt.Println("Paste base64 Offer (from browser) then press Enter, then Ctrl-D (EOF) if multi-line:")
-	offerB64, err := readAllStdin()
+	// Read remote offer (base64 JSON of SessionDescription) interactively
+	offerB64, err := readBase64FromPrompt("Paste Offer (base64) from browser. End with an empty line or type END on a new line:\n> ")
 	if err != nil {
-		return err
+		return fmt.Errorf("read offer: %w", err)
 	}
 	offerJSON, err := base64.StdEncoding.DecodeString(strings.TrimSpace(offerB64))
 	if err != nil {
@@ -312,7 +311,9 @@ func runPeer(fps, quality, display int) error {
 	local := pc.LocalDescription()
 	ansJSON, _ := json.Marshal(local)
 	ansB64 := base64.StdEncoding.EncodeToString(ansJSON)
-	fmt.Println("Answer (base64). Copy back into browser:\n" + ansB64)
+	fmt.Println("\nAnswer (base64) — copy this back into the browser:")
+	fmt.Println(ansB64)
+	fmt.Println("\nWaiting for data channels to open...")
 
 	// Wait for frames channel ready
 	select {
@@ -356,14 +357,37 @@ func runPeer(fps, quality, display int) error {
 }
 
 func readAllStdin() (string, error) {
-	// Read a single line (most base64 offers will be single-line). If more data
-	// is piped in, read the rest.
+	// Deprecated; kept for reference
 	reader := bufio.NewReader(os.Stdin)
 	line, err := reader.ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return "", err
 	}
-	// Drain remaining bytes if any
 	rest, _ := io.ReadAll(reader)
 	return line + string(rest), nil
+}
+
+// readBase64FromPrompt prompts the user and reads one or more lines until a blank line or a line "END" is entered.
+func readBase64FromPrompt(prompt string) (string, error) {
+	fmt.Print(prompt)
+	scanner := bufio.NewScanner(os.Stdin)
+	var b strings.Builder
+	first := true
+	for {
+		if !scanner.Scan() {
+			if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
+				return "", err
+			}
+			break
+		}
+		line := scanner.Text()
+		if strings.TrimSpace(line) == "" || strings.EqualFold(strings.TrimSpace(line), "END") {
+			break
+		}
+		if first {
+			first = false
+		}
+		b.WriteString(strings.TrimSpace(line))
+	}
+	return b.String(), nil
 }

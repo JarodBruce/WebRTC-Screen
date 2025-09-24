@@ -65,6 +65,19 @@
 				"$go"
 			],
 			"group": "build"
+		},
+		{
+			"label": "go build",
+			"type": "shell",
+			"command": "go",
+			"args": [
+				"build",
+				"./..."
+			],
+			"problemMatcher": [
+				"$go"
+			],
+			"group": "build"
 		}
 	]
 }
