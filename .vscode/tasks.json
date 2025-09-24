@@ -78,6 +78,32 @@
 				"$go"
 			],
 			"group": "build"
+		},
+		{
+			"label": "go build",
+			"type": "shell",
+			"command": "go",
+			"args": [
+				"build",
+				"./..."
+			],
+			"problemMatcher": [
+				"$go"
+			],
+			"group": "build"
+		},
+		{
+			"label": "go build client only",
+			"type": "shell",
+			"command": "go",
+			"args": [
+				"run",
+				"./client.go"
+			],
+			"problemMatcher": [
+				"$go"
+			],
+			"group": "build"
 		}
 	]
 }

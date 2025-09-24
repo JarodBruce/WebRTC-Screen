@@ -18,22 +18,21 @@ This project streams the Windows desktop to a macOS browser via WebRTC DataChann
 
 ## Run
 
-On macOS (serves the static page only):
+On macOS (serve the static page only):
 
 ```bash
-MODE=server go run .
-# Open http://localhost:8080 in a browser
+go run ./client.go
+# Then open http://localhost:8080 in your browser
 ```
 
 In the page:
 
 1. Click "1) Create Offer". Copy the base64 text from "Local Offer".
 
-On Windows (the peer that streams desktop):
+On Windows (the peer that streams desktop and injects input):
 
 ```powershell
-$Env:MODE = "peer"
-go run .
+go run ./windows.go
 # You'll see a prompt:
 #   Paste Offer (base64) from browser. End with an empty line or type END on a new line:
 # Paste the Offer (base64). Finish by entering a blank line or typing END.
@@ -52,6 +51,7 @@ Back on macOS browser:
 - STUN: `stun:stun.l.google.com:19302` only. No TURN or signaling servers.
 - Manual signaling via copy/paste means both endpoints must be able to reach each other peer-to-peer. If not, you may need a TURN server (intentionally not included per requirements).
 - macOS build uses no-op input shims; input injection happens only on Windows.
+- Windows peer optionally supports env overrides: `FPS` (default 10), `QUALITY` (default 80), `DISPLAY_INDEX` (default 0).
 - FPS/quality are fixed in code (defaults: 10 FPS, JPEG quality 80). Adjust in `main.go` if needed.
 
 ## Troubleshooting
