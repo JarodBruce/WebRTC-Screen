@@ -26,6 +26,7 @@ const (
 	MOUSEEVENTF_RIGHTUP    = 0x0010
 	MOUSEEVENTF_MIDDLEDOWN = 0x0020
 	MOUSEEVENTF_MIDDLEUP   = 0x0040
+	MOUSEEVENTF_WHEEL      = 0x0800
 
 	// key flags
 	KEYEVENTF_KEYUP = 0x0002
@@ -144,6 +145,30 @@ func typeString(s string) {
 			}
 		}
 	}
+}
+
+// scroll performs vertical scrolling.
+// deltaY uses the web wheel convention: positive means scroll down.
+// Windows mouse_event expects WHEEL_DELTA multiples, where one notch = 120.
+func scroll(deltaY float64) {
+	if deltaY == 0 {
+		return
+	}
+	// Heuristic: 120 units per 100 pixels of wheel delta to keep it reasonable.
+	// Many browsers use deltaMode=DOM_DELTA_PIXEL by default; deltaY is pixels.
+	// Scale and clamp to int32 range.
+	const wheelDelta = 120.0
+	// Invert sign: On Windows, positive data scrolls forward (away from user),
+	// which usually corresponds to scrolling up. Browser deltaY>0 means down.
+	amt := int32(-deltaY / 100.0 * wheelDelta)
+	if amt == 0 {
+		if deltaY > 0 {
+			amt = -120
+		} else {
+			amt = 120
+		}
+	}
+	mouseEvent(MOUSEEVENTF_WHEEL, 0, 0, uint32(int32(amt)), 0)
 }
 
 // mapKey maps normalized key names to virtual-key codes.

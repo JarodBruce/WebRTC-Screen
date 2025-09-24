@@ -29,3 +29,7 @@ func KeyUp(k string) { keyUp(k) }
 
 // TypeString types text using synthetic keyboard events.
 func TypeString(s string) { typeString(s) }
+
+// Scroll vertically by a delta measured in browser-style pixels.
+// Positive delta scrolls down, negative scrolls up.
+func Scroll(deltaY float64) { scroll(deltaY) }

@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build !windows && !darwin
 
 package input
 
@@ -16,3 +16,6 @@ func keyDown(name string) {}
 func keyUp(name string) {}
 
 func typeString(s string) {}
+
+// scroll is a no-op on platforms without a specific implementation.
+func scroll(deltaY float64) {}

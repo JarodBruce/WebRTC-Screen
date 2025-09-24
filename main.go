@@ -133,8 +133,8 @@ func handleInput(ev InputEvent) {
 	case "contextmenu": // right-click
 		input.Click(input.ButtonRight)
 	case "wheel":
-		// Scrolling not supported in this build to keep compatibility across OS variants
-		// Consider mapping to key events (PageUp/PageDown) if needed
+		// Implement scroll using input package. Positive deltaY scrolls down.
+		input.Scroll(ev.DeltaY)
 	case "keydown":
 		if key := normalizeKey(ev.Key); key != "" {
 			input.KeyDown(key)
