@@ -94,23 +94,15 @@
                 return;
             }
             
+            // Simplified event sending for debugging
             var data = {
                 type: event.type,
                 key: event.key,
                 keyCode: event.keyCode,
                 button: event.button,
+                x: event.clientX, // Sending raw viewport coordinates
+                y: event.clientY
             };
-
-            // Translate mouse coordinates
-            if (event.type.startsWith('mouse')) {
-                // Check if mouse is inside the scaled image
-                if (event.clientX < offsetX || event.clientX > offsetX + (serverWidth * scale) ||
-                    event.clientY < offsetY || event.clientY > offsetY + (serverHeight * scale)) {
-                    return; // Do not send events outside the image bounds
-                }
-                data.x = Math.round((event.clientX - offsetX) / scale);
-                data.y = Math.round((event.clientY - offsetY) / scale);
-            }
             
             ws.send(JSON.stringify(data));
         }
