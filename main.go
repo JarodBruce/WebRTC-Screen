@@ -16,7 +16,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/go-vgo/robotgo"
+	"weblinuxgui/input"
+
 	"github.com/gorilla/websocket"
 	"github.com/kbinani/screenshot"
 )
@@ -124,42 +125,42 @@ func handleWS(mgr *ClientManager) http.HandlerFunc {
 func handleInput(ev InputEvent) {
 	switch ev.Type {
 	case "mousemove":
-		robotgo.MoveMouse(ev.X, ev.Y)
+		input.MoveMouse(ev.X, ev.Y)
 	case "mousedown":
 		// no-op: some robotgo builds may not support press without click
 	case "mouseup":
-		robotgo.Click(normalizeButton(ev.Button), false)
+		input.Click(mapButton(ev.Button))
 	case "contextmenu": // right-click
-		robotgo.Click("right", false)
+		input.Click(input.ButtonRight)
 	case "wheel":
 		// Scrolling not supported in this build to keep compatibility across OS variants
 		// Consider mapping to key events (PageUp/PageDown) if needed
 	case "keydown":
 		if key := normalizeKey(ev.Key); key != "" {
-			robotgo.KeyDown(key)
+			input.KeyDown(key)
 		}
 	case "keyup":
 		if key := normalizeKey(ev.Key); key != "" {
-			robotgo.KeyUp(key)
+			input.KeyUp(key)
 		}
 	case "paste":
 		if ev.ClipboardText != "" {
 			// Type the text directly
-			robotgo.TypeStr(ev.ClipboardText)
+			input.TypeString(ev.ClipboardText)
 		}
 	}
 }
 
-func normalizeButton(b string) string {
+func mapButton(b string) input.Button {
 	switch strings.ToLower(b) {
 	case "left", "l":
-		return "left"
+		return input.ButtonLeft
 	case "right", "r":
-		return "right"
+		return input.ButtonRight
 	case "center", "middle", "m":
-		return "center"
+		return input.ButtonMiddle
 	default:
-		return "left"
+		return input.ButtonLeft
 	}
 }
 
@@ -257,7 +258,7 @@ func sendFrame(cfg StreamConfig) {
 	}
 	b64 := base64.StdEncoding.EncodeToString(buf.Bytes())
 
-	x, y := robotgo.GetMousePos()
+	x, y := input.GetMousePos()
 
 	cfg.Manager.BroadcastJSON(struct {
 		Image  string `json:"image"`
