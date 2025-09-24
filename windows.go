@@ -183,17 +183,7 @@ func runPeer(fps, quality, display int) error {
 				if msg.IsString {
 					var ev InputEvent
 					if err := json.Unmarshal(msg.Data, &ev); err == nil {
-						// debug: log received input briefly (type and coords/keys)
-						switch ev.Type {
-						case "mousemove", "mousedown", "mouseup", "contextmenu":
-							log.Printf("input: %s (%d,%d) btn=%s", ev.Type, ev.X, ev.Y, ev.Button)
-						case "wheel":
-							log.Printf("input: wheel dy=%.2f", ev.DeltaY)
-						case "keydown", "keyup":
-							log.Printf("input: %s key=%s", ev.Type, ev.Key)
-						case "paste":
-							log.Printf("input: paste len=%d", len(ev.ClipboardText))
-						}
+						// Process input event without extra logging
 						handleInput(ev)
 					}
 				}
