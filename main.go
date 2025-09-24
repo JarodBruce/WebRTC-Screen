@@ -1,24 +1,32 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"image/jpeg"
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/go-vgo/robotgo"
 	"github.com/gorilla/websocket"
+	"github.com/kbinani/screenshot"
 )
 
-var upgrader = websocket.Upgrader{} // use default options
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool {
+		return true
+	},
+}
 
-type MouseEvent struct {
-	Type   string `json:"type"`
-	X      int    `json:"x"`
-	Y      int    `json:"y"`
-	Button int    `json:"button"`
-	Key    string `json:"key"`
-	KeyCode int   `json:"keyCode"`
+type Event struct {
+	Type    string `json:"type"`
+	X       int    `json:"x"`
+	Y       int    `json:"y"`
+	Button  int    `json:"button"`
+	Key     string `json:"key"`
+	KeyCode int    `json:"keyCode"`
 }
 
 func serveHome(w http.ResponseWriter, r *http.Request) {
@@ -27,25 +35,29 @@ func serveHome(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleConnections(w http.ResponseWriter, r *http.Request) {
-	// Upgrade initial GET request to a websocket
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
-	// Make sure we close the connection when the function returns
 	defer ws.Close()
-
 	log.Println("Client Connected")
 
+	// Goroutine to handle input from the client
+	go handleInput(ws)
+
+	// Loop to stream the screen to the client
+	streamScreen(ws)
+}
+
+func handleInput(ws *websocket.Conn) {
 	for {
-		// Read message from browser
 		_, msg, err := ws.ReadMessage()
 		if err != nil {
-			log.Println("read:", err)
+			log.Println("read error:", err)
 			break
 		}
 
-		var event MouseEvent
+		var event Event
 		if err := json.Unmarshal(msg, &event); err != nil {
 			log.Println("error unmarshalling json:", err)
 			continue
@@ -55,27 +67,50 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 		case "mousemove":
 			robotgo.Move(event.X, event.Y)
 		case "mousedown":
-			robotgo.Click("left", false) // false means press down, not release
+			robotgo.Click("left", false)
 		case "mouseup":
-			robotgo.Click("left", true) // true means release
+			robotgo.Click("left", true)
 		case "keydown":
 			robotgo.KeyTap(event.Key)
 		case "keyup":
-			// Key release is not explicitly handled by robotgo in a simple way
-			// for KeyTap. KeyTap simulates a full press and release.
+			// Key release is not explicitly handled by robotgo for KeyTap.
+		}
+	}
+}
+
+func streamScreen(ws *websocket.Conn) {
+	ticker := time.NewTicker(100 * time.Millisecond) // 10 FPS
+	defer ticker.Stop()
+
+	for range ticker.C {
+		bounds := screenshot.GetDisplayBounds(0)
+		img, err := screenshot.CaptureRect(bounds)
+		if err != nil {
+			log.Println("capture error:", err)
+			continue
+		}
+
+		buf := new(bytes.Buffer)
+		err = jpeg.Encode(buf, img, &jpeg.Options{Quality: 80})
+		if err != nil {
+			log.Println("jpeg encode error:", err)
+			continue
+		}
+
+		err = ws.WriteMessage(websocket.BinaryMessage, buf.Bytes())
+		if err != nil {
+			log.Println("write error:", err)
+			break
 		}
 	}
 }
 
 func main() {
-	// This is often required for robotgo to find the display.
 	os.Setenv("DISPLAY", ":0")
 
-	// Configure http server
 	http.HandleFunc("/", serveHome)
 	http.HandleFunc("/ws", handleConnections)
 
-	// Start server
 	log.Println("http server started on :8080")
 	err := http.ListenAndServe(":8080", nil)
 	if err != nil {
