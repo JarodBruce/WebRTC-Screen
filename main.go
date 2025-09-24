@@ -37,9 +37,6 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 
 	log.Println("Client Connected")
 
-	// This is often required for robotgo to find the display.
-	os.Setenv("DISPLAY", ":0")
-
 	for {
 		// Read message from browser
 		_, msg, err := ws.ReadMessage()
@@ -71,6 +68,9 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	// This is often required for robotgo to find the display.
+	os.Setenv("DISPLAY", ":0")
+
 	// Configure http server
 	http.HandleFunc("/", serveHome)
 	http.HandleFunc("/ws", handleConnections)
