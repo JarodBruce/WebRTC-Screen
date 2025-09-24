@@ -55,15 +55,49 @@
         }
 
         // WebRTC auto signaling via /signal
-        let pc = null, dcInput = null, dcFrames = null;
+    let pc = null, dcInput = null, dcFrames = null;
+    // Chunk reassembly buffers
+    let currentFrame = null; // { id, chunks, received, parts: [], mouseX, mouseY }
         function createPC() {
             pc = new RTCPeerConnection({ iceServers: [{ urls: ['stun:stun.l.google.com:19302'] }] });
             // Data channels: we create both so Windows peer can receive and handle accordingly
             dcInput = pc.createDataChannel('input');
             dcFrames = pc.createDataChannel('frames');
 
+            dcFrames.onopen = () => console.log('frames dc open');
+            dcFrames.onclose = () => console.log('frames dc close');
             dcFrames.onmessage = (e) => {
-                try { lastUpdate = JSON.parse(e.data); draw(lastUpdate); } catch {}
+                try {
+                    const msg = JSON.parse(e.data);
+                    if (msg && msg.type === 'frameMeta') {
+                        // Start a new frame buffer
+                        currentFrame = {
+                            id: msg.id,
+                            chunks: msg.chunks,
+                            received: 0,
+                            parts: new Array(msg.chunks),
+                            mouseX: msg.mouseX,
+                            mouseY: msg.mouseY,
+                        };
+                    } else if (msg && msg.type === 'frameChunk' && currentFrame && msg.id === currentFrame.id) {
+                        if (msg.index >= 0 && msg.index < currentFrame.chunks) {
+                            currentFrame.parts[msg.index] = msg.data;
+                            currentFrame.received++;
+                            if (currentFrame.received === currentFrame.chunks) {
+                                // Assemble and draw
+                                const image = currentFrame.parts.join('');
+                                lastUpdate = { image, mouseX: currentFrame.mouseX, mouseY: currentFrame.mouseY };
+                                draw(lastUpdate);
+                                currentFrame = null;
+                            }
+                        }
+                    } else if (msg && msg.image) {
+                        // Backward compatibility (single payload)
+                        lastUpdate = msg; draw(lastUpdate);
+                    }
+                } catch (err) {
+                    // Non-JSON or parse error; ignore silently
+                }
             };
             pc.onicecandidate = () => { /* no-op: we wait for gathering to complete */ };
         }
@@ -117,7 +151,7 @@
             if (ev.type === 'mousedown' || ev.type === 'mouseup' || ev.type === 'contextmenu') {
                 data.button = ev.button === 2 ? 'right' : ev.button === 1 ? 'center' : 'left';
             }
-            dcInput.send(JSON.stringify(data));
+            try { dcInput.send(JSON.stringify(data)); } catch {}
         }
         window.addEventListener('paste', (e) => {
             if (!dcInput || dcInput.readyState !== 'open') return; e.preventDefault();

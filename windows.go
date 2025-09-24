@@ -285,24 +285,54 @@ func runPeer(fps, quality, display int) error {
 		return fmt.Errorf("frames channel not opened by browser")
 	}
 
+	// Chunked transfer to respect SCTP/DC message size limits
+	// Keep chunks small (<16KB) to be safe across browsers/OSes
+	const chunkSize = 12 * 1024
 	interval := time.Second / time.Duration(max(fps, 1))
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	frameID := 0
 	for range ticker.C {
 		if framesDC == nil {
 			continue
 		}
 		b64, mx, my, ok := captureAndEncode(quality, display)
-		if !ok {
+		if !ok || len(b64) == 0 {
 			continue
 		}
-		// Send a single JSON message with fields the browser expects
-		payload, _ := json.Marshal(struct {
-			Image  string `json:"image"`
+		nChunks := (len(b64) + chunkSize - 1) / chunkSize
+		// Send metadata first
+		meta := struct {
+			Type   string `json:"type"`
+			ID     int    `json:"id"`
+			Chunks int    `json:"chunks"`
 			MouseX int    `json:"mouseX"`
 			MouseY int    `json:"mouseY"`
-		}{Image: b64, MouseX: mx, MouseY: my})
-		_ = framesDC.SendText(string(payload))
+		}{Type: "frameMeta", ID: frameID, Chunks: nChunks, MouseX: mx, MouseY: my}
+		if err := framesDC.SendText(mustJSON(meta)); err != nil {
+			// If we fail to send meta, skip this frame
+			continue
+		}
+		// Send chunks
+		for i := 0; i < nChunks; i++ {
+			start := i * chunkSize
+			end := start + chunkSize
+			if end > len(b64) {
+				end = len(b64)
+			}
+			chunk := struct {
+				Type  string `json:"type"`
+				ID    int    `json:"id"`
+				Index int    `json:"index"`
+				Data  string `json:"data"`
+			}{Type: "frameChunk", ID: frameID, Index: i, Data: b64[start:end]}
+			// Best-effort; drop frame if a chunk fails, next frame will arrive soon
+			_ = framesDC.SendText(mustJSON(chunk))
+		}
+		frameID++
+		if frameID == int(^uint(0)>>1) { // avoid overflow; reset occasionally
+			frameID = 0
+		}
 	}
 	return nil
 }
@@ -342,4 +372,13 @@ func main() {
 	if err := runPeer(fps, quality, display); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// mustJSON is a tiny helper to marshal or return an empty JSON object on error.
+func mustJSON(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
 }
