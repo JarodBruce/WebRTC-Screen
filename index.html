@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Web Linux GUI</title>
+</head>
+<body>
+    <h1>Web Linux GUI</h1>
+    <canvas id="screen" width="1024" height="768" style="border:1px solid #000;"></canvas>
+    <script>
+        var ws = new WebSocket("ws://localhost:8080/ws");
+        var screen = document.getElementById('screen');
+        var ctx = screen.getContext('2d');
+
+        ws.onopen = function() {
+            console.log("Connected to WebSocket");
+        };
+
+        ws.onmessage = function(e) {
+            // Assuming the server sends image data
+            if (e.data instanceof Blob) {
+                var url = URL.createObjectURL(e.data);
+                var img = new Image();
+                img.onload = function() {
+                    ctx.drawImage(img, 0, 0);
+                    URL.revokeObjectURL(url);
+                }
+                img.src = url;
+            } else {
+                 console.log("Message from server: ", e.data);
+            }
+        };
+
+        ws.onclose = function() {
+            console.log("Disconnected from WebSocket");
+        };
+
+        ws.onerror = function(err) {
+            console.error("WebSocket Error: ", err);
+        };
+
+        function sendEvent(event) {
+            if (ws.readyState === WebSocket.OPEN) {
+                var data = {
+                    type: event.type,
+                    x: event.clientX,
+                    y: event.clientY,
+                    button: event.button,
+                    key: event.key,
+                    keyCode: event.keyCode
+                };
+                ws.send(JSON.stringify(data));
+            }
+        }
+
+        // Capture mouse events from the canvas
+        screen.addEventListener('mousemove', sendEvent);
+        screen.addEventListener('mousedown', sendEvent);
+        screen.addEventListener('mouseup', sendEvent);
+
+        // Capture keyboard events from the whole window
+        window.addEventListener('keydown', sendEvent);
+        window.addEventListener('keyup', sendEvent);
+
+    </script>
+</body>
+</html>
