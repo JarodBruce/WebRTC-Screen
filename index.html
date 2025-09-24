@@ -21,11 +21,22 @@
         var screen = document.getElementById('screen');
         var ctx = screen.getContext('2d');
 
+        // Global variables to store scaling and offset info
+        var scale = 1;
+        var offsetX = 0;
+        var offsetY = 0;
+        var serverWidth = 1;
+        var serverHeight = 1;
+
+
         function resizeCanvas() {
             screen.width = window.innerWidth;
             screen.height = window.innerHeight;
+            // When window resizes, redraw the last image with new dimensions
+            drawScreenImage(lastImage);
         }
 
+        var lastImage = null;
         window.addEventListener('resize', resizeCanvas, false);
         resizeCanvas(); // Initial resize
 
@@ -33,13 +44,35 @@
             console.log("Connected to WebSocket");
         };
 
+        function drawScreenImage(img) {
+            if (!img) return;
+            
+            ctx.clearRect(0, 0, screen.width, screen.height);
+
+            serverWidth = img.naturalWidth;
+            serverHeight = img.naturalHeight;
+
+            // Calculate the best scale to fit the image within the canvas
+            scale = Math.min(screen.width / serverWidth, screen.height / serverHeight);
+
+            var newWidth = serverWidth * scale;
+            var newHeight = serverHeight * scale;
+
+            // Calculate offset to center the image
+            offsetX = (screen.width - newWidth) / 2;
+            offsetY = (screen.height - newHeight) / 2;
+
+            ctx.drawImage(img, offsetX, offsetY, newWidth, newHeight);
+        }
+
+
         ws.onmessage = function(e) {
-            // Assuming the server sends image data
             if (e.data instanceof Blob) {
                 var url = URL.createObjectURL(e.data);
                 var img = new Image();
                 img.onload = function() {
-                    ctx.drawImage(img, 0, 0, screen.width, screen.height); // Stretch image to fill canvas
+                    lastImage = img;
+                    drawScreenImage(img);
                     URL.revokeObjectURL(url);
                 }
                 img.src = url;
@@ -57,19 +90,29 @@
         };
 
         function sendEvent(event) {
-            if (ws.readyState === WebSocket.OPEN) {
-                // Translate coordinates to be relative to the canvas size if needed,
-                // but for fullscreen, clientX/Y should be correct.
-                var data = {
-                    type: event.type,
-                    x: event.clientX,
-                    y: event.clientY,
-                    button: event.button,
-                    key: event.key,
-                    keyCode: event.keyCode
-                };
-                ws.send(JSON.stringify(data));
+            if (ws.readyState !== WebSocket.OPEN) {
+                return;
             }
+            
+            var data = {
+                type: event.type,
+                key: event.key,
+                keyCode: event.keyCode,
+                button: event.button,
+            };
+
+            // Translate mouse coordinates
+            if (event.type.startsWith('mouse')) {
+                // Check if mouse is inside the scaled image
+                if (event.clientX < offsetX || event.clientX > offsetX + (serverWidth * scale) ||
+                    event.clientY < offsetY || event.clientY > offsetY + (serverHeight * scale)) {
+                    return; // Do not send events outside the image bounds
+                }
+                data.x = Math.round((event.clientX - offsetX) / scale);
+                data.y = Math.round((event.clientY - offsetY) / scale);
+            }
+            
+            ws.send(JSON.stringify(data));
         }
 
         // Capture mouse events from the canvas
