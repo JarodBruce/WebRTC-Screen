@@ -196,13 +196,17 @@ func runPeer(fps, quality, display int) error {
 	}
 	udpPort := getEnv("UDP_PORT", "8080")
 	localhostOnly := getEnvBool("BIND_LOCALHOST_ONLY", false)
-	bindAddr := getEnv("LOCAL_ADDR", "192.168.1.9")
+	// LOCAL_ADDR can be either "ip:port" or just "ip"; if empty, fall back to 0.0.0.0:UDP_PORT (or 127.0.0.1 when localhost only)
+	bindAddr := getEnv("LOCAL_ADDR", "")
 	if bindAddr == "" {
 		if localhostOnly {
 			bindAddr = net.JoinHostPort("127.0.0.1", udpPort)
 		} else {
 			bindAddr = net.JoinHostPort("0.0.0.0", udpPort)
 		}
+	} else if !strings.Contains(bindAddr, ":") {
+		// If user provided only an IP, append UDP_PORT automatically
+		bindAddr = net.JoinHostPort(bindAddr, udpPort)
 	}
 	localAddr, err := net.ResolveUDPAddr("udp4", bindAddr)
 	if err != nil {
