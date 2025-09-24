@@ -2,14 +2,32 @@
 <html>
 <head>
     <title>Web Linux GUI</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            overflow: hidden; /* Hide scrollbars */
+        }
+        #screen {
+            display: block;
+        }
+    </style>
 </head>
 <body>
-    <h1>Web Linux GUI</h1>
-    <canvas id="screen" width="1024" height="768" style="border:1px solid #000;"></canvas>
+    <canvas id="screen"></canvas>
     <script>
         var ws = new WebSocket("ws://localhost:8080/ws");
         var screen = document.getElementById('screen');
         var ctx = screen.getContext('2d');
+
+        function resizeCanvas() {
+            screen.width = window.innerWidth;
+            screen.height = window.innerHeight;
+        }
+
+        window.addEventListener('resize', resizeCanvas, false);
+        resizeCanvas(); // Initial resize
 
         ws.onopen = function() {
             console.log("Connected to WebSocket");
@@ -21,7 +39,7 @@
                 var url = URL.createObjectURL(e.data);
                 var img = new Image();
                 img.onload = function() {
-                    ctx.drawImage(img, 0, 0);
+                    ctx.drawImage(img, 0, 0, screen.width, screen.height); // Stretch image to fill canvas
                     URL.revokeObjectURL(url);
                 }
                 img.src = url;
@@ -40,6 +58,8 @@
 
         function sendEvent(event) {
             if (ws.readyState === WebSocket.OPEN) {
+                // Translate coordinates to be relative to the canvas size if needed,
+                // but for fullscreen, clientX/Y should be correct.
                 var data = {
                     type: event.type,
                     x: event.clientX,
