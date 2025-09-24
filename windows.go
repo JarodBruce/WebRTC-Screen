@@ -34,17 +34,28 @@ type InputEvent struct {
 	ClipboardText string   `json:"clipboardText"`
 }
 
+// Global display offset for multi-monitor setups
+var dispOffsetX, dispOffsetY int
+
 func handleInput(ev InputEvent) {
 	switch ev.Type {
 	case "mousemove":
-		input.MoveMouse(ev.X, ev.Y)
+		// Adjust for display origin in multi-monitor setups
+		input.MoveMouse(ev.X+dispOffsetX, ev.Y+dispOffsetY)
 	case "mousedown":
-		// optional: hold press logic
+		// Ensure cursor is at target before any press logic
+		input.MoveMouse(ev.X+dispOffsetX, ev.Y+dispOffsetY)
 	case "mouseup":
+		// Ensure cursor is at target even if no prior mousemove arrived
+		input.MoveMouse(ev.X+dispOffsetX, ev.Y+dispOffsetY)
 		input.Click(mapButton(ev.Button))
 	case "contextmenu":
+		// Right click at target location
+		input.MoveMouse(ev.X+dispOffsetX, ev.Y+dispOffsetY)
 		input.Click(input.ButtonRight)
 	case "wheel":
+		// Scroll at target location
+		input.MoveMouse(ev.X+dispOffsetX, ev.Y+dispOffsetY)
 		input.Scroll(ev.DeltaY)
 	case "keydown":
 		if key := normalizeKey(ev.Key); key != "" {
@@ -124,6 +135,7 @@ func captureAndEncode(quality, display int) (b64 string, mx, my int, ok bool) {
 		d = 0
 	}
 	bounds := screenshot.GetDisplayBounds(d)
+	dispOffsetX, dispOffsetY = bounds.Min.X, bounds.Min.Y
 	img, err := screenshot.CaptureRect(bounds)
 	if err != nil {
 		return "", 0, 0, false
@@ -166,10 +178,22 @@ func runPeer(fps, quality, display int) error {
 		log.Println("data channel:", label)
 		switch label {
 		case "input":
+			dc.OnOpen(func() { log.Println("input data channel open") })
 			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
 				if msg.IsString {
 					var ev InputEvent
 					if err := json.Unmarshal(msg.Data, &ev); err == nil {
+						// debug: log received input briefly (type and coords/keys)
+						switch ev.Type {
+						case "mousemove", "mousedown", "mouseup", "contextmenu":
+							log.Printf("input: %s (%d,%d) btn=%s", ev.Type, ev.X, ev.Y, ev.Button)
+						case "wheel":
+							log.Printf("input: wheel dy=%.2f", ev.DeltaY)
+						case "keydown", "keyup":
+							log.Printf("input: %s key=%s", ev.Type, ev.Key)
+						case "paste":
+							log.Printf("input: paste len=%d", len(ev.ClipboardText))
+						}
 						handleInput(ev)
 					}
 				}
@@ -272,9 +296,11 @@ func runPeer(fps, quality, display int) error {
 		if !ok {
 			continue
 		}
+		// Send a single JSON message with fields the browser expects
 		payload, _ := json.Marshal(struct {
-			Image          string `json:"image"`
-			MouseX, MouseY int
+			Image  string `json:"image"`
+			MouseX int    `json:"mouseX"`
+			MouseY int    `json:"mouseY"`
 		}{Image: b64, MouseX: mx, MouseY: my})
 		_ = framesDC.SendText(string(payload))
 	}
