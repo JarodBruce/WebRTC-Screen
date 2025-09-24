@@ -23,12 +23,15 @@ var upgrader = websocket.Upgrader{
 
 // Event struct for incoming messages from the client
 type Event struct {
-	Type    string `json:"type"`
-	X       int    `json:"x"`
-	Y       int    `json:"y"`
-	Button  int    `json:"button"`
-	Key     string `json:"key"`
-	KeyCode int    `json:"keyCode"`
+	Type          string   `json:"type"`
+	X             int      `json:"x"`
+	Y             int      `json:"y"`
+	Button        string   `json:"button"`
+	Key           string   `json:"key"`
+	KeyCode       int      `json:"keyCode"`
+	Modifiers     []string `json:"modifiers"`
+	DeltaY        int      `json:"deltaY"`
+	ClipboardText string   `json:"clipboardText"`
 }
 
 // ScreenUpdate struct for outgoing messages to the client
@@ -73,12 +76,20 @@ func handleInput(ws *websocket.Conn) {
 		case "mousemove":
 			robotgo.Move(event.X, event.Y)
 		case "mousedown":
-			robotgo.Click("left", false)
+			robotgo.Toggle(event.Button, "down")
 		case "mouseup":
-			robotgo.Click("left", true)
+			robotgo.Toggle(event.Button, "up")
 		case "keydown":
-			robotgo.KeyTap(event.Key)
+			// robotgo doesn't handle all keys well (e.g. symbols).
+			// A more robust solution might be needed for special characters.
+			robotgo.KeyTap(event.Key, event.Modifiers)
 		case "keyup":
+			// Keyup is often not needed for KeyTap, but could be implemented
+			// with KeyToggle if necessary for specific applications (e.g. games).
+		case "wheel":
+			robotgo.Scroll(0, event.DeltaY)
+		case "paste":
+			robotgo.WriteAll(event.ClipboardText)
 		}
 	}
 }

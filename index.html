@@ -12,10 +12,30 @@
         #screen {
             display: block;
         }
+        #menu {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            background-color: rgba(0,0,0,0.7);
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            z-index: 100;
+        }
+        #menu button {
+            margin-top: 5px;
+            display: block;
+            width: 100%;
+        }
     </style>
 </head>
 <body>
     <canvas id="screen"></canvas>
+    <div id="menu">
+        <span>Menu</span>
+        <button id="disconnectBtn">Disconnect</button>
+    </div>
+
     <script>
         var ws = new WebSocket("ws://localhost:8080/ws");
         var screen = document.getElementById('screen');
@@ -37,7 +57,10 @@
         resizeCanvas();
 
         ws.onopen = function() { console.log("Connected"); };
-        ws.onclose = function() { console.log("Disconnected"); };
+        ws.onclose = function() { 
+            console.log("Disconnected"); 
+            document.body.innerHTML = "<h1>Disconnected</h1>";
+        };
         ws.onerror = function(err) { console.error(err); };
 
         function drawCursor(x, y) {
@@ -86,28 +109,64 @@
         function sendEvent(event) {
             if (ws.readyState !== WebSocket.OPEN) return;
             
+            // Prevent default browser actions for certain events
+            if (event.type === 'contextmenu' || (event.type === 'keydown' && (event.ctrlKey || event.metaKey))) {
+                event.preventDefault();
+            }
+
             var data = {
                 type: event.type,
                 key: event.key,
                 keyCode: event.keyCode,
-                button: event.button,
+                modifiers: [],
+                deltaY: event.deltaY,
             };
 
-            if (event.type.startsWith('mouse')) {
-                if (event.clientX < offsetX || event.clientX > offsetX + (serverWidth * scale) ||
+            if (event.shiftKey) data.modifiers.push("shift");
+            if (event.ctrlKey) data.modifiers.push("ctrl");
+            if (event.altKey) data.modifiers.push("alt");
+            // Note: 'metaKey' (Cmd/Windows key) is not typically supported by robotgo in the same way.
+
+            if (event.type.startsWith('mouse') || event.type === 'wheel' || event.type === 'contextmenu') {
+                 if (event.clientX < offsetX || event.clientX > offsetX + (serverWidth * scale) ||
                     event.clientY < offsetY || event.clientY > offsetY + (serverHeight * scale)) {
                     return; 
                 }
                 data.x = Math.round((event.clientX - offsetX) / scale);
                 data.y = Math.round((event.clientY - offsetY) / scale);
             }
+
+            if (event.type === 'mousedown' || event.type === 'mouseup' || event.type === 'contextmenu') {
+                switch (event.button) {
+                    case 0: data.button = "left"; break;
+                    case 1: data.button = "center"; break;
+                    case 2: data.button = "right"; break;
+                }
+            }
             
             ws.send(JSON.stringify(data));
         }
 
+        document.getElementById('disconnectBtn').addEventListener('click', function() {
+            ws.close();
+        });
+
+        // Paste event
+        window.addEventListener('paste', function(e) {
+            if (ws.readyState !== WebSocket.OPEN) return;
+            e.preventDefault();
+            var text = e.clipboardData.getData('text/plain');
+            ws.send(JSON.stringify({
+                type: 'paste',
+                clipboardText: text,
+            }));
+        });
+
         screen.addEventListener('mousemove', sendEvent);
         screen.addEventListener('mousedown', sendEvent);
         screen.addEventListener('mouseup', sendEvent);
+        screen.addEventListener('contextmenu', sendEvent); // For right-click
+        screen.addEventListener('wheel', sendEvent);       // For scrolling
         window.addEventListener('keydown', sendEvent);
         window.addEventListener('keyup', sendEvent);
     </script>
