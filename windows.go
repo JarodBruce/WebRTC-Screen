@@ -3,15 +3,13 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"image/jpeg"
-	"io"
 	"log"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -182,11 +180,46 @@ func runPeer(fps, quality, display int) error {
 		}
 	})
 
-	offerB64, err := readBase64FromPrompt("Paste Offer (base64) from browser. End with an empty line or type END on a new line:\n> ")
-	if err != nil {
-		return fmt.Errorf("read offer: %w", err)
+	// UDP signaling: listen for OFFER and reply with ANSWER
+	getEnv := func(k, def string) string {
+		if v := os.Getenv(k); v != "" {
+			return v
+		}
+		return def
 	}
-	offerJSON, err := base64.StdEncoding.DecodeString(strings.TrimSpace(offerB64))
+	getEnvBool := func(k string, def bool) bool {
+		if v := os.Getenv(k); v != "" {
+			v = strings.ToLower(strings.TrimSpace(v))
+			return v == "1" || v == "true" || v == "yes"
+		}
+		return def
+	}
+	udpPort := getEnv("UDP_PORT", "8080")
+	localhostOnly := getEnvBool("BIND_LOCALHOST_ONLY", false)
+	bindAddr := getEnv("LOCAL_ADDR", "192.168.1.9")
+	if bindAddr == "" {
+		if localhostOnly {
+			bindAddr = net.JoinHostPort("127.0.0.1", udpPort)
+		} else {
+			bindAddr = net.JoinHostPort("0.0.0.0", udpPort)
+		}
+	}
+	localAddr, err := net.ResolveUDPAddr("udp4", bindAddr)
+	if err != nil {
+		return fmt.Errorf("resolve local UDP: %w", err)
+	}
+	conn, err := net.ListenUDP("udp4", localAddr)
+	if err != nil {
+		return fmt.Errorf("listen UDP: %w", err)
+	}
+	defer conn.Close()
+	log.Println("Windows peer UDP listening on", bindAddr)
+
+	offerStr, from, err := waitForPrefix(conn, "OFFER:", 60*time.Second)
+	if err != nil {
+		return fmt.Errorf("wait OFFER: %w", err)
+	}
+	offerJSON, err := base64.StdEncoding.DecodeString(strings.TrimSpace(offerStr))
 	if err != nil {
 		return fmt.Errorf("decode offer b64: %w", err)
 	}
@@ -210,9 +243,12 @@ func runPeer(fps, quality, display int) error {
 	local := pc.LocalDescription()
 	ansJSON, _ := json.Marshal(local)
 	ansB64 := base64.StdEncoding.EncodeToString(ansJSON)
-	fmt.Println("\nAnswer (base64) — copy this back into the browser:")
-	fmt.Println(ansB64)
-	fmt.Println("\nWaiting for data channels to open...")
+	// Send ANSWER back to the sender via UDP
+	if _, err := conn.WriteToUDP([]byte("ANSWER:"+ansB64), from); err != nil {
+		return fmt.Errorf("send ANSWER: %w", err)
+	}
+	log.Println("ANSWER sent via UDP to", from.String())
+	log.Println("Waiting for data channels to open...")
 
 	select {
 	case <-framesReady:
@@ -241,25 +277,21 @@ func runPeer(fps, quality, display int) error {
 	return nil
 }
 
-// readBase64FromPrompt prompts user for base64 input until blank line or END
-func readBase64FromPrompt(prompt string) (string, error) {
-	fmt.Print(prompt)
-	scanner := bufio.NewScanner(os.Stdin)
-	var b strings.Builder
+// waitForPrefix reads UDP packets until one starting with the given prefix arrives, or timeout.
+func waitForPrefix(conn *net.UDPConn, prefix string, timeout time.Duration) (string, *net.UDPAddr, error) {
+	_ = conn.SetReadDeadline(time.Now().Add(timeout))
+	buf := make([]byte, 64*1024)
 	for {
-		if !scanner.Scan() {
-			if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
-				return "", err
-			}
-			break
+		n, addr, err := conn.ReadFromUDP(buf)
+		if err != nil {
+			return "", nil, err
 		}
-		line := scanner.Text()
-		if strings.TrimSpace(line) == "" || strings.EqualFold(strings.TrimSpace(line), "END") {
-			break
+		msg := string(buf[:n])
+		if strings.HasPrefix(msg, prefix) {
+			return msg[len(prefix):], addr, nil
 		}
-		b.WriteString(strings.TrimSpace(line))
+		// ignore other packets
 	}
-	return b.String(), nil
 }
 
 // envInt reads an environment variable or returns a default if unset/invalid.

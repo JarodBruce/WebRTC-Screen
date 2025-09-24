@@ -2,7 +2,7 @@
 <html>
 <head>
     <meta charset="utf-8" />
-    <title>WebRTC Remote Desktop (manual SDP)</title>
+    <title>WebRTC Remote Desktop</title>
     <style>
         html, body {
             margin: 0; padding: 0; height: 100%; overflow: hidden;
@@ -19,12 +19,7 @@
     </style>
 </head>
 <body>
-    <div id="topbar">
-        <button id="createOffer">1) Create Offer</button>
-        <textarea id="localOffer" placeholder="Local Offer (base64)"></textarea>
-        <textarea id="remoteAnswer" placeholder="Paste Answer (base64) and click Set"></textarea>
-        <button id="setAnswer">2) Set Answer</button>
-    </div>
+    <div id="topbar"><span>Connecting…</span></div>
     <canvas id="screen"></canvas>
     <div id="overlay"></div>
 
@@ -59,7 +54,7 @@
             img.src = 'data:image/jpeg;base64,' + update.image;
         }
 
-        // WebRTC manual signaling
+        // WebRTC auto signaling via /signal
         let pc = null, dcInput = null, dcFrames = null;
         function createPC() {
             pc = new RTCPeerConnection({ iceServers: [{ urls: ['stun:stun.l.google.com:19302'] }] });
@@ -73,20 +68,6 @@
             pc.onicecandidate = () => { /* no-op: we wait for gathering to complete */ };
         }
 
-        async function createOffer() {
-            if (!pc) createPC();
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-            await waitIceGathering(pc);
-            const sdp = pc.localDescription;
-            const b64 = btoa(JSON.stringify(sdp));
-            document.getElementById('localOffer').value = b64;
-        }
-        async function setAnswer() {
-            const b64 = document.getElementById('remoteAnswer').value.trim();
-            const json = JSON.parse(atob(b64));
-            await pc.setRemoteDescription(json);
-        }
         function waitIceGathering(pc) {
             if (pc.iceGatheringState === 'complete') return Promise.resolve();
             return new Promise((resolve) => {
@@ -99,8 +80,26 @@
             });
         }
 
-        document.getElementById('createOffer').onclick = createOffer;
-        document.getElementById('setAnswer').onclick = setAnswer;
+        async function start() {
+            if (!pc) createPC();
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            await waitIceGathering(pc);
+            const sdp = pc.localDescription;
+            const res = await fetch('/signal', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ offer: sdp })
+            });
+            if (!res.ok) throw new Error('Signaling failed: ' + res.status);
+            const answer = await res.json();
+            await pc.setRemoteDescription(answer);
+            document.getElementById('topbar').innerHTML = '<span>Connected</span>';
+        }
+        start().catch(err => {
+            console.error(err);
+            document.getElementById('topbar').innerHTML = '<span style="color:#f66">Failed to connect: '+String(err)+'</span>';
+        });
 
         // Input events -> send JSON over dcInput
         function sendEvent(ev) {
