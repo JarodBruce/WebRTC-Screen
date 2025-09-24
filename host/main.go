@@ -5,23 +5,136 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"image"
+	"math/rand"
+	"net"
 	"os"
+	"sort"
+	"strconv"
+	"strings"
 	"time"
 
-	"github.com/kbinani/screenshot"
+	"github.com/pion/mediadevices"
+	"github.com/pion/mediadevices/pkg/codec/vpx"
+	_ "github.com/pion/mediadevices/pkg/driver/screen"
 	"github.com/pion/webrtc/v4"
-	"github.com/pion/webrtc/v4/pkg/media"
 )
 
+const maxUDPPayloadSize = 1200 // Safe payload size to avoid MTU issues
+
+// writeFragments splits a message and sends it as UDP fragments.
+func writeFragments(conn *net.UDPConn, addr *net.UDPAddr, msgID, message string) {
+	numChunks := (len(message) + maxUDPPayloadSize - 1) / maxUDPPayloadSize
+	for i := 0; i < numChunks; i++ {
+		start := i * maxUDPPayloadSize
+		end := start + maxUDPPayloadSize
+		if end > len(message) {
+			end = len(message)
+		}
+		chunkData := message[start:end]
+		header := fmt.Sprintf("FRAG:%s:%d:%d:", msgID, numChunks, i)
+		chunk := header + chunkData
+		_, err := conn.WriteToUDP([]byte(chunk), addr)
+		if err != nil {
+			// In a real app, more robust error handling/retries would be needed.
+			fmt.Printf("failed to write UDP chunk: %v\n", err)
+		}
+		// A small delay can help prevent overwhelming the receiver's buffer.
+		time.Sleep(1 * time.Millisecond)
+	}
+}
+
+// waitForMessageWithFragments waits for a message, reassembling if fragmented.
+func waitForMessageWithFragments(conn *net.UDPConn, prefix string, timeout time.Duration) (string, *net.UDPAddr, error) {
+	_ = conn.SetReadDeadline(time.Now().Add(timeout))
+
+	chunks := make(map[string]map[int]string) // msgID -> chunkIndex -> data
+	totalChunks := make(map[string]int)       // msgID -> total
+
+	// Buffer needs to be large enough for a full chunk + headers
+	buf := make([]byte, maxUDPPayloadSize+100)
+	for {
+		n, addr, err := conn.ReadFromUDP(buf)
+		if err != nil {
+			return "", nil, err
+		}
+
+		msg := string(buf[:n])
+		if strings.HasPrefix(msg, "FRAG:") {
+			parts := strings.SplitN(msg, ":", 5)
+			if len(parts) < 5 {
+				continue // Malformed fragment
+			}
+			msgID, numChunksStr, chunkIndexStr, payload := parts[1], parts[2], parts[3], parts[4]
+
+			numChunks, err := strconv.Atoi(numChunksStr)
+			if err != nil {
+				continue
+			}
+			chunkIndex, err := strconv.Atoi(chunkIndexStr)
+			if err != nil {
+				continue
+			}
+
+			if _, ok := chunks[msgID]; !ok {
+				chunks[msgID] = make(map[int]string)
+				totalChunks[msgID] = numChunks
+			}
+			chunks[msgID][chunkIndex] = payload
+
+			// Check if we have all chunks for this message ID
+			if len(chunks[msgID]) == totalChunks[msgID] {
+				var reassembled strings.Builder
+				// Sort by chunk index to ensure correct order
+				keys := make([]int, 0, len(chunks[msgID]))
+				for k := range chunks[msgID] {
+					keys = append(keys, k)
+				}
+				sort.Ints(keys)
+				for _, k := range keys {
+					reassembled.WriteString(chunks[msgID][k])
+				}
+
+				fullMsg := reassembled.String()
+				if strings.HasPrefix(fullMsg, prefix) {
+					// Cleanup memory for this message ID
+					delete(chunks, msgID)
+					delete(totalChunks, msgID)
+					return strings.TrimPrefix(fullMsg, prefix), addr, nil
+				}
+			}
+		} else if strings.HasPrefix(msg, prefix) {
+			// Handle non-fragmented message for simple cases
+			return strings.TrimPrefix(msg, prefix), addr, nil
+		}
+	}
+}
+
 func main() {
-	answerFilePath := flag.String("answer-file", "answer.txt", "Path to the answer file")
+	localAddr := flag.String("local-addr", ":8080", "Local UDP address to listen on")
+	remoteAddr := flag.String("remote-addr", "127.0.0.1:8081", "Remote UDP address for the controller")
 	flag.Parse()
+
+	// --- UDP Signaling Setup ---
+	laddr, err := net.ResolveUDPAddr("udp", *localAddr)
+	if err != nil {
+		panic(err)
+	}
+	raddr, err := net.ResolveUDPAddr("udp", *remoteAddr)
+	if err != nil {
+		panic(err)
+	}
+	conn, err := net.ListenUDP("udp", laddr)
+	if err != nil {
+		panic(err)
+	}
+	defer conn.Close()
+	fmt.Printf("Host listening for signaling on %s\n", conn.LocalAddr())
+	fmt.Printf("Will send offer to controller at %s\n", raddr)
 
 	// --- WebRTC PeerConnectionのセットアップ ---
 	peerConnection, err := webrtc.NewPeerConnection(webrtc.Configuration{
 		ICEServers: []webrtc.ICEServer{
-			{URLs: []string{"stun:stun.l.google.com:1932"}},
+			{URLs: []string{"stun:stun.l.google.com:19302"}},
 		},
 	})
 	if err != nil {
@@ -33,26 +146,34 @@ func main() {
 		}
 	}()
 
-	// --- ビデオトラックの作成 ---
-	videoTrack, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8}, "video", "pion")
+	// --- Create video track from screen capture using mediadevices ---
+	vpxParams, err := vpx.NewVP8Params()
 	if err != nil {
 		panic(err)
 	}
-	rtpSender, err := peerConnection.AddTrack(videoTrack)
+	vpxParams.BitRate = 1_000_000 // 1Mbps
+
+	codecSelector := mediadevices.NewCodecSelector(
+		mediadevices.WithVideoEncoders(&vpxParams),
+	)
+
+	mediaStream, err := mediadevices.GetDisplayMedia(mediadevices.MediaStreamConstraints{
+		Video: func(c *mediadevices.MediaTrackConstraints) {
+			// Specific video constraints can be set here if needed
+		},
+		Codec: codecSelector,
+	})
 	if err != nil {
 		panic(err)
 	}
-	// Read incoming RTCP packets
-	// Before these packets are returned they are processed by interceptors. For things
-	// like NACK this needs to be called.
-	go func() {
-		rtcpBuf := make([]byte, 1500)
-		for {
-			if _, _, rtcpErr := rtpSender.Read(rtcpBuf); rtcpErr != nil {
-				return
-			}
-		}
-	}()
+
+	track := mediaStream.GetVideoTracks()[0]
+	_, err = peerConnection.AddTransceiverFromTrack(track, webrtc.RTPTransceiverInit{
+		Direction: webrtc.RTPTransceiverDirectionSendonly,
+	})
+	if err != nil {
+		panic(err)
+	}
 
 	// --- シグナリング (オファーの生成とアンサーの待機) ---
 	offer, err := peerConnection.CreateOffer(nil)
@@ -65,24 +186,23 @@ func main() {
 	}
 	<-gatherComplete
 
-	fmt.Println("--- Offer (copy this to the controller's offer file) ---")
-	fmt.Println(Encode(*peerConnection.LocalDescription()))
-	fmt.Println("----------------------------------------------------------")
+	// --- シグナリング (オファーの送信とアンサーの待機) ---
+	fmt.Println("--- Sending Offer via UDP ---")
+	offerPayload := Encode(*peerConnection.LocalDescription())
+	// Use a random ID for the message fragments
+	msgID := fmt.Sprintf("%d", rand.Intn(100000))
+	writeFragments(conn, raddr, msgID, "OFFER:"+offerPayload)
+	fmt.Println("-----------------------------")
 
-	// answer.txt が作成されるのを待つ
-	fmt.Printf("Paste the Answer from the controller into %s and save it.\n", *answerFilePath)
-	var answerBytes []byte
-	for {
-		answerBytes, err = os.ReadFile(*answerFilePath)
-		if err == nil && len(answerBytes) > 0 {
-			os.Remove(*answerFilePath) // ファイルを削除
-			break
-		}
-		time.Sleep(1 * time.Second)
+	fmt.Println("Waiting for Answer from controller...")
+	answerStr, from, err := waitForMessageWithFragments(conn, "ANSWER:", 60*time.Second)
+	if err != nil {
+		panic(fmt.Sprintf("Error waiting for answer: %v", err))
 	}
+	fmt.Printf("Received Answer from %s\n", from)
 
 	answer := webrtc.SessionDescription{}
-	Decode(string(answerBytes), &answer)
+	Decode(answerStr, &answer)
 
 	if err = peerConnection.SetRemoteDescription(answer); err != nil {
 		panic(err)
@@ -97,58 +217,12 @@ func main() {
 		}
 		if s == webrtc.PeerConnectionStateConnected {
 			fmt.Println("Connection established! Starting screen capture...")
-			// --- 画面キャプチャとビデオ送信のループ ---
-			go func() {
-				ticker := time.NewTicker(33 * time.Millisecond) // ~30 FPS
-				for range ticker.C {
-					bounds := screenshot.GetDisplayBounds(0)
-					img, err := screenshot.CaptureRect(bounds)
-					if err != nil {
-						// fmt.Println("Error capturing screen:", err)
-						continue
-					}
-
-					// image.RGBA を image.YCbCr に変換
-					ycbcrImg := toYCbCr(img)
-
-					// WriteSampleに渡すデータはYCbCrのYプレーン（輝度）のみで良い場合がある
-					// VP8エンコーダは内部で色差情報も扱うが、APIとしては輝度プレーンのバイトスライスを渡す
-					if err := videoTrack.WriteSample(media.Sample{Data: ycbcrImg.Y, Duration: time.Second / 30}); err != nil {
-						// fmt.Println("Error writing sample:", err)
-					}
-				}
-			}()
+			// Screen capture is handled by mediadevices, no need for a separate goroutine here.
 		}
 	})
 
 	// アプリケーションが終了しないように待機
 	select {}
-}
-
-// toYCbCr converts image.RGBA to image.YCbCr.
-func toYCbCr(img *image.RGBA) *image.YCbCr {
-	bounds := img.Bounds()
-	ycbcr := image.NewYCbCr(bounds, image.YCbCrSubsampleRatio420)
-	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
-		for x := bounds.Min.X; x < bounds.Max.X; x++ {
-			r, g, b, _ := img.At(x, y).RGBA()
-			r8, g8, b8 := uint8(r>>8), uint8(g>>8), uint8(b>>8)
-
-			Y := 0.299*float64(r8) + 0.587*float64(g8) + 0.114*float64(b8)
-			Cb := 128 - 0.168736*float64(r8) - 0.331264*float64(g8) + 0.5*float64(b8)
-			Cr := 128 + 0.5*float64(r8) - 0.418688*float64(g8) - 0.081312*float64(b8)
-
-			yi := y*ycbcr.YStride + x
-			ci := (y/2)*ycbcr.CStride + (x / 2)
-
-			ycbcr.Y[yi] = uint8(Y)
-			if x%2 == 0 && y%2 == 0 {
-				ycbcr.Cb[ci] = uint8(Cb)
-				ycbcr.Cr[ci] = uint8(Cr)
-			}
-		}
-	}
-	return ycbcr
 }
 
 // --- シグナリング情報 (SDP) をエンコード/デコードするためのヘルパー関数 ---
