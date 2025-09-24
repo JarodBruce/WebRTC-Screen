@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"image/jpeg"
 	"log"
@@ -20,6 +21,7 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+// Event struct for incoming messages from the client
 type Event struct {
 	Type    string `json:"type"`
 	X       int    `json:"x"`
@@ -27,6 +29,13 @@ type Event struct {
 	Button  int    `json:"button"`
 	Key     string `json:"key"`
 	KeyCode int    `json:"keyCode"`
+}
+
+// ScreenUpdate struct for outgoing messages to the client
+type ScreenUpdate struct {
+	Image  string `json:"image"`
+	MouseX int    `json:"mouseX"`
+	MouseY int    `json:"mouseY"`
 }
 
 func serveHome(w http.ResponseWriter, r *http.Request) {
@@ -42,10 +51,7 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 	defer ws.Close()
 	log.Println("Client Connected")
 
-	// Goroutine to handle input from the client
 	go handleInput(ws)
-
-	// Loop to stream the screen to the client
 	streamScreen(ws)
 }
 
@@ -73,7 +79,6 @@ func handleInput(ws *websocket.Conn) {
 		case "keydown":
 			robotgo.KeyTap(event.Key)
 		case "keyup":
-			// Key release is not explicitly handled by robotgo for KeyTap.
 		}
 	}
 }
@@ -97,7 +102,22 @@ func streamScreen(ws *websocket.Conn) {
 			continue
 		}
 
-		err = ws.WriteMessage(websocket.BinaryMessage, buf.Bytes())
+		imgStr := base64.StdEncoding.EncodeToString(buf.Bytes())
+		mouseX, mouseY := robotgo.GetMousePos()
+
+		update := ScreenUpdate{
+			Image:  imgStr,
+			MouseX: mouseX,
+			MouseY: mouseY,
+		}
+
+		jsonUpdate, err := json.Marshal(update)
+		if err != nil {
+			log.Println("json marshal error:", err)
+			continue
+		}
+
+		err = ws.WriteMessage(websocket.TextMessage, jsonUpdate)
 		if err != nil {
 			log.Println("write error:", err)
 			break

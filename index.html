@@ -21,101 +21,95 @@
         var screen = document.getElementById('screen');
         var ctx = screen.getContext('2d');
 
-        // Global variables to store scaling and offset info
         var scale = 1;
         var offsetX = 0;
         var offsetY = 0;
         var serverWidth = 1;
         var serverHeight = 1;
-
+        var lastUpdate = null;
 
         function resizeCanvas() {
             screen.width = window.innerWidth;
             screen.height = window.innerHeight;
-            // When window resizes, redraw the last image with new dimensions
-            drawScreenImage(lastImage);
+            drawScreenUpdate(lastUpdate);
         }
-
-        var lastImage = null;
         window.addEventListener('resize', resizeCanvas, false);
-        resizeCanvas(); // Initial resize
+        resizeCanvas();
 
-        ws.onopen = function() {
-            console.log("Connected to WebSocket");
-        };
+        ws.onopen = function() { console.log("Connected"); };
+        ws.onclose = function() { console.log("Disconnected"); };
+        ws.onerror = function(err) { console.error(err); };
 
-        function drawScreenImage(img) {
-            if (!img) return;
-            
-            ctx.clearRect(0, 0, screen.width, screen.height);
-
-            serverWidth = img.naturalWidth;
-            serverHeight = img.naturalHeight;
-
-            // Calculate the best scale to fit the image within the canvas
-            scale = Math.min(screen.width / serverWidth, screen.height / serverHeight);
-
-            var newWidth = serverWidth * scale;
-            var newHeight = serverHeight * scale;
-
-            // Calculate offset to center the image
-            offsetX = (screen.width - newWidth) / 2;
-            offsetY = (screen.height - newHeight) / 2;
-
-            ctx.drawImage(img, offsetX, offsetY, newWidth, newHeight);
+        function drawCursor(x, y) {
+            ctx.fillStyle = 'white';
+            ctx.strokeStyle = 'black';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(x, y);
+            ctx.lineTo(x, y + 14);
+            ctx.lineTo(x + 10, y + 10);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
         }
 
+        function drawScreenUpdate(update) {
+            if (!update || !update.image) return;
+            
+            var img = new Image();
+            img.onload = function() {
+                ctx.clearRect(0, 0, screen.width, screen.height);
+
+                serverWidth = img.naturalWidth;
+                serverHeight = img.naturalHeight;
+                scale = Math.min(screen.width / serverWidth, screen.height / serverHeight);
+                var newWidth = serverWidth * scale;
+                var newHeight = serverHeight * scale;
+                offsetX = (screen.width - newWidth) / 2;
+                offsetY = (screen.height - newHeight) / 2;
+
+                ctx.drawImage(img, offsetX, offsetY, newWidth, newHeight);
+
+                // Draw the remote cursor
+                var canvasMouseX = offsetX + (update.mouseX * scale);
+                var canvasMouseY = offsetY + (update.mouseY * scale);
+                drawCursor(canvasMouseX, canvasMouseY);
+            };
+            img.src = "data:image/jpeg;base64," + update.image;
+        }
 
         ws.onmessage = function(e) {
-            if (e.data instanceof Blob) {
-                var url = URL.createObjectURL(e.data);
-                var img = new Image();
-                img.onload = function() {
-                    lastImage = img;
-                    drawScreenImage(img);
-                    URL.revokeObjectURL(url);
-                }
-                img.src = url;
-            } else {
-                 console.log("Message from server: ", e.data);
-            }
-        };
-
-        ws.onclose = function() {
-            console.log("Disconnected from WebSocket");
-        };
-
-        ws.onerror = function(err) {
-            console.error("WebSocket Error: ", err);
+            lastUpdate = JSON.parse(e.data);
+            drawScreenUpdate(lastUpdate);
         };
 
         function sendEvent(event) {
-            if (ws.readyState !== WebSocket.OPEN) {
-                return;
-            }
+            if (ws.readyState !== WebSocket.OPEN) return;
             
-            // Simplified event sending for debugging
             var data = {
                 type: event.type,
                 key: event.key,
                 keyCode: event.keyCode,
                 button: event.button,
-                x: event.clientX, // Sending raw viewport coordinates
-                y: event.clientY
             };
+
+            if (event.type.startsWith('mouse')) {
+                if (event.clientX < offsetX || event.clientX > offsetX + (serverWidth * scale) ||
+                    event.clientY < offsetY || event.clientY > offsetY + (serverHeight * scale)) {
+                    return; 
+                }
+                data.x = Math.round((event.clientX - offsetX) / scale);
+                data.y = Math.round((event.clientY - offsetY) / scale);
+            }
             
             ws.send(JSON.stringify(data));
         }
 
-        // Capture mouse events from the canvas
         screen.addEventListener('mousemove', sendEvent);
         screen.addEventListener('mousedown', sendEvent);
         screen.addEventListener('mouseup', sendEvent);
-
-        // Capture keyboard events from the whole window
         window.addEventListener('keydown', sendEvent);
         window.addEventListener('keyup', sendEvent);
-
     </script>
 </body>
 </html>
