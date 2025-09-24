@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
 
 	"github.com/go-vgo/robotgo"
 	"github.com/gorilla/websocket"
@@ -35,6 +36,9 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 	defer ws.Close()
 
 	log.Println("Client Connected")
+
+	// This is often required for robotgo to find the display.
+	os.Setenv("DISPLAY", ":0")
 
 	for {
 		// Read message from browser
