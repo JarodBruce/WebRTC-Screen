@@ -1,172 +1,135 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Web Linux GUI</title>
+    <meta charset="utf-8" />
+    <title>WebRTC Remote Desktop (manual SDP)</title>
     <style>
-        body, html {
-            margin: 0;
-            padding: 0;
-            height: 100%;
-            overflow: hidden; /* Hide scrollbars */
+        html, body {
+            margin: 0; padding: 0; height: 100%; overflow: hidden;
+            background: #111; color: #eee; font-family: system-ui, sans-serif;
         }
-        #screen {
-            display: block;
+        #topbar {
+            position: fixed; top: 10px; left: 10px; right: 10px; z-index: 10;
+            display: flex; gap: 10px; align-items: stretch;
         }
-        #menu {
-            position: fixed;
-            top: 10px;
-            right: 10px;
-            background-color: rgba(0,0,0,0.7);
-            color: white;
-            padding: 10px;
-            border-radius: 5px;
-            z-index: 100;
-        }
-        #menu button {
-            margin-top: 5px;
-            display: block;
-            width: 100%;
-        }
+        textarea { width: 50%; height: 110px; background: #000; color: #0f0; padding: 8px; }
+        button { padding: 8px 12px; }
+        #screen { display: block; width: 100vw; height: 100vh; }
+        #overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; pointer-events: none; }
     </style>
 </head>
 <body>
-    <canvas id="screen"></canvas>
-    <div id="menu">
-        <span>Menu</span>
-        <button id="disconnectBtn">Disconnect</button>
+    <div id="topbar">
+        <button id="createOffer">1) Create Offer</button>
+        <textarea id="localOffer" placeholder="Local Offer (base64)"></textarea>
+        <textarea id="remoteAnswer" placeholder="Paste Answer (base64) and click Set"></textarea>
+        <button id="setAnswer">2) Set Answer</button>
     </div>
+    <canvas id="screen"></canvas>
+    <div id="overlay"></div>
 
     <script>
-        var ws = new WebSocket("ws://localhost:8080/ws");
-        var screen = document.getElementById('screen');
-        var ctx = screen.getContext('2d');
-
-        var scale = 1;
-        var offsetX = 0;
-        var offsetY = 0;
-        var serverWidth = 1;
-        var serverHeight = 1;
-        var lastUpdate = null;
-
+        // Canvas setup
+        const screen = document.getElementById('screen');
+        const ctx = screen.getContext('2d');
+        let scale = 1, offsetX = 0, offsetY = 0, serverWidth = 1, serverHeight = 1, lastUpdate = null;
         function resizeCanvas() {
-            screen.width = window.innerWidth;
-            screen.height = window.innerHeight;
-            drawScreenUpdate(lastUpdate);
+            screen.width = window.innerWidth; screen.height = window.innerHeight; draw(lastUpdate);
         }
-        window.addEventListener('resize', resizeCanvas, false);
-        resizeCanvas();
-
-        ws.onopen = function() { console.log("Connected"); };
-        ws.onclose = function() { 
-            console.log("Disconnected"); 
-            document.body.innerHTML = "<h1>Disconnected</h1>";
-        };
-        ws.onerror = function(err) { console.error(err); };
+        window.addEventListener('resize', resizeCanvas); resizeCanvas();
 
         function drawCursor(x, y) {
-            ctx.fillStyle = 'white';
-            ctx.strokeStyle = 'black';
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(x, y);
-            ctx.lineTo(x, y + 14);
-            ctx.lineTo(x + 10, y + 10);
-            ctx.closePath();
-            ctx.fill();
-            ctx.stroke();
+            ctx.fillStyle = 'white'; ctx.strokeStyle = 'black'; ctx.lineWidth = 1;
+            ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y + 14); ctx.lineTo(x + 10, y + 10); ctx.closePath();
+            ctx.fill(); ctx.stroke();
         }
-
-        function drawScreenUpdate(update) {
+        function draw(update) {
             if (!update || !update.image) return;
-            
-            var img = new Image();
-            img.onload = function() {
+            const img = new Image();
+            img.onload = () => {
                 ctx.clearRect(0, 0, screen.width, screen.height);
-
-                serverWidth = img.naturalWidth;
-                serverHeight = img.naturalHeight;
+                serverWidth = img.naturalWidth; serverHeight = img.naturalHeight;
                 scale = Math.min(screen.width / serverWidth, screen.height / serverHeight);
-                var newWidth = serverWidth * scale;
-                var newHeight = serverHeight * scale;
-                offsetX = (screen.width - newWidth) / 2;
-                offsetY = (screen.height - newHeight) / 2;
-
-                ctx.drawImage(img, offsetX, offsetY, newWidth, newHeight);
-
-                // Draw the remote cursor
-                var canvasMouseX = offsetX + (update.mouseX * scale);
-                var canvasMouseY = offsetY + (update.mouseY * scale);
-                drawCursor(canvasMouseX, canvasMouseY);
+                const newW = serverWidth * scale, newH = serverHeight * scale;
+                offsetX = (screen.width - newW) / 2; offsetY = (screen.height - newH) / 2;
+                ctx.drawImage(img, offsetX, offsetY, newW, newH);
+                const mx = offsetX + (update.mouseX * scale), my = offsetY + (update.mouseY * scale);
+                drawCursor(mx, my);
             };
-            img.src = "data:image/jpeg;base64," + update.image;
+            img.src = 'data:image/jpeg;base64,' + update.image;
         }
 
-        ws.onmessage = function(e) {
-            lastUpdate = JSON.parse(e.data);
-            drawScreenUpdate(lastUpdate);
-        };
+        // WebRTC manual signaling
+        let pc = null, dcInput = null, dcFrames = null;
+        function createPC() {
+            pc = new RTCPeerConnection({ iceServers: [{ urls: ['stun:stun.l.google.com:19302'] }] });
+            // Data channels: we create both so Windows peer can receive and handle accordingly
+            dcInput = pc.createDataChannel('input');
+            dcFrames = pc.createDataChannel('frames');
 
-        function sendEvent(event) {
-            if (ws.readyState !== WebSocket.OPEN) return;
-            
-            // Prevent default browser actions for certain events
-            if (event.type === 'contextmenu' || (event.type === 'keydown' && (event.ctrlKey || event.metaKey))) {
-                event.preventDefault();
-            }
-
-            var data = {
-                type: event.type,
-                key: event.key,
-                keyCode: event.keyCode,
-                modifiers: [],
-                deltaY: event.deltaY,
+            dcFrames.onmessage = (e) => {
+                try { lastUpdate = JSON.parse(e.data); draw(lastUpdate); } catch {}
             };
-
-            if (event.shiftKey) data.modifiers.push("shift");
-            if (event.ctrlKey) data.modifiers.push("ctrl");
-            if (event.altKey) data.modifiers.push("alt");
-            // Note: 'metaKey' (Cmd/Windows key) is not typically supported by robotgo in the same way.
-
-            if (event.type.startsWith('mouse') || event.type === 'wheel' || event.type === 'contextmenu') {
-                 if (event.clientX < offsetX || event.clientX > offsetX + (serverWidth * scale) ||
-                    event.clientY < offsetY || event.clientY > offsetY + (serverHeight * scale)) {
-                    return; 
-                }
-                data.x = Math.round((event.clientX - offsetX) / scale);
-                data.y = Math.round((event.clientY - offsetY) / scale);
-            }
-
-            if (event.type === 'mousedown' || event.type === 'mouseup' || event.type === 'contextmenu') {
-                switch (event.button) {
-                    case 0: data.button = "left"; break;
-                    case 1: data.button = "center"; break;
-                    case 2: data.button = "right"; break;
-                }
-            }
-            
-            ws.send(JSON.stringify(data));
+            pc.onicecandidate = () => { /* no-op: we wait for gathering to complete */ };
         }
 
-        document.getElementById('disconnectBtn').addEventListener('click', function() {
-            ws.close();
-        });
+        async function createOffer() {
+            if (!pc) createPC();
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            await waitIceGathering(pc);
+            const sdp = pc.localDescription;
+            const b64 = btoa(JSON.stringify(sdp));
+            document.getElementById('localOffer').value = b64;
+        }
+        async function setAnswer() {
+            const b64 = document.getElementById('remoteAnswer').value.trim();
+            const json = JSON.parse(atob(b64));
+            await pc.setRemoteDescription(json);
+        }
+        function waitIceGathering(pc) {
+            if (pc.iceGatheringState === 'complete') return Promise.resolve();
+            return new Promise((resolve) => {
+                function check() {
+                    if (pc.iceGatheringState === 'complete') {
+                        pc.removeEventListener('icegatheringstatechange', check); resolve();
+                    }
+                }
+                pc.addEventListener('icegatheringstatechange', check);
+            });
+        }
 
-        // Paste event
-        window.addEventListener('paste', function(e) {
-            if (ws.readyState !== WebSocket.OPEN) return;
-            e.preventDefault();
-            var text = e.clipboardData.getData('text/plain');
-            ws.send(JSON.stringify({
-                type: 'paste',
-                clipboardText: text,
-            }));
-        });
+        document.getElementById('createOffer').onclick = createOffer;
+        document.getElementById('setAnswer').onclick = setAnswer;
 
+        // Input events -> send JSON over dcInput
+        function sendEvent(ev) {
+            if (!dcInput || dcInput.readyState !== 'open') return;
+            if (ev.type === 'contextmenu' || (ev.type === 'keydown' && (ev.ctrlKey || ev.metaKey))) ev.preventDefault();
+            const data = { type: ev.type, key: ev.key, keyCode: ev.keyCode, modifiers: [], deltaY: ev.deltaY };
+            if (ev.shiftKey) data.modifiers.push('shift');
+            if (ev.ctrlKey) data.modifiers.push('ctrl');
+            if (ev.altKey) data.modifiers.push('alt');
+            if (ev.type.startsWith('mouse') || ev.type === 'wheel' || ev.type === 'contextmenu') {
+                if (ev.clientX < offsetX || ev.clientX > offsetX + (serverWidth * scale) || ev.clientY < offsetY || ev.clientY > offsetY + (serverHeight * scale)) return;
+                data.x = Math.round((ev.clientX - offsetX) / scale);
+                data.y = Math.round((ev.clientY - offsetY) / scale);
+            }
+            if (ev.type === 'mousedown' || ev.type === 'mouseup' || ev.type === 'contextmenu') {
+                data.button = ev.button === 2 ? 'right' : ev.button === 1 ? 'center' : 'left';
+            }
+            dcInput.send(JSON.stringify(data));
+        }
+        window.addEventListener('paste', (e) => {
+            if (!dcInput || dcInput.readyState !== 'open') return; e.preventDefault();
+            const text = e.clipboardData.getData('text/plain');
+            dcInput.send(JSON.stringify({ type: 'paste', clipboardText: text }));
+        });
         screen.addEventListener('mousemove', sendEvent);
         screen.addEventListener('mousedown', sendEvent);
         screen.addEventListener('mouseup', sendEvent);
-        screen.addEventListener('contextmenu', sendEvent); // For right-click
-        screen.addEventListener('wheel', sendEvent);       // For scrolling
+        screen.addEventListener('contextmenu', sendEvent);
+        screen.addEventListener('wheel', sendEvent);
         window.addEventListener('keydown', sendEvent);
         window.addEventListener('keyup', sendEvent);
     </script>

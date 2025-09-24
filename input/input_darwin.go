@@ -1,4 +1,4 @@
-//go:build darwin
+//go:build darwin && cgo
 
 package input
 
@@ -32,3 +32,20 @@ func scroll(deltaY float64) {
 	}
 	C.cgScroll(C.double(deltaY))
 }
+
+// The following are minimal no-op implementations on macOS. This project
+// acts as the browser/server on macOS and controls a remote Windows host,
+// so we do not inject local input here. These are provided to satisfy the
+// cross-platform interface and keep builds green on darwin.
+
+func moveMouse(x, y int) {}
+
+func getMousePos() (int, int) { return 0, 0 }
+
+func click(btn Button) {}
+
+func keyDown(name string) {}
+
+func keyUp(name string) {}
+
+func typeString(s string) {}

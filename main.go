@@ -1,70 +1,34 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"embed"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"image/jpeg"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
 	"weblinuxgui/input"
 
-	"github.com/gorilla/websocket"
 	"github.com/kbinani/screenshot"
+	"github.com/pion/webrtc/v4"
 )
 
 //go:embed index.html
 var embeddedFiles embed.FS
 
-// ---- Client manager ----
-type ClientManager struct {
-	mu      sync.RWMutex
-	clients map[*websocket.Conn]bool
-}
-
-func NewManager() *ClientManager {
-	return &ClientManager{clients: make(map[*websocket.Conn]bool)}
-}
-
-func (m *ClientManager) Add(c *websocket.Conn) {
-	m.mu.Lock()
-	m.clients[c] = true
-	m.mu.Unlock()
-}
-
-func (m *ClientManager) Remove(c *websocket.Conn) {
-	m.mu.Lock()
-	if _, ok := m.clients[c]; ok {
-		delete(m.clients, c)
-		_ = c.Close()
-	}
-	m.mu.Unlock()
-}
-
-func (m *ClientManager) BroadcastJSON(v any) {
-	data, err := json.Marshal(v)
-	if err != nil {
-		log.Println("broadcast marshal error:", err)
-		return
-	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	for c := range m.clients {
-		c.SetWriteDeadline(time.Now().Add(2 * time.Second))
-		if err := c.WriteMessage(websocket.TextMessage, data); err != nil {
-			log.Println("write client error:", err)
-		}
-	}
-}
+// No WebSocket client manager needed; WebRTC DataChannels are used instead.
 
 // ---- HTTP handlers ----
 func serveIndex(w http.ResponseWriter, r *http.Request) {
@@ -77,9 +41,6 @@ func serveIndex(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(b)
 }
 
-// ---- WebSocket and input handling ----
-var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
-
 type InputEvent struct {
 	Type          string   `json:"type"`
 	Key           string   `json:"key"`
@@ -90,36 +51,6 @@ type InputEvent struct {
 	Y             int      `json:"y"`
 	Button        string   `json:"button"`
 	ClipboardText string   `json:"clipboardText"`
-}
-
-func handleWS(mgr *ClientManager) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			log.Println("upgrade error:", err)
-			return
-		}
-		mgr.Add(conn)
-		log.Println("client connected")
-
-		defer func() {
-			mgr.Remove(conn)
-			log.Println("client disconnected")
-		}()
-
-		for {
-			_, msg, err := conn.ReadMessage()
-			if err != nil {
-				return
-			}
-			var ev InputEvent
-			if err := json.Unmarshal(msg, &ev); err != nil {
-				log.Println("ws json error:", err)
-				continue
-			}
-			handleInput(ev)
-		}
-	}
 }
 
 func handleInput(ev InputEvent) {
@@ -209,34 +140,15 @@ type StreamConfig struct {
 	FPS     int
 	Quality int
 	Display int
-	Manager *ClientManager
 }
 
-func StartStreamer(cfg StreamConfig) chan struct{} {
-	stop := make(chan struct{})
-	go func() {
-		interval := time.Second / time.Duration(max(cfg.FPS, 1))
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-stop:
-				return
-			case <-ticker.C:
-				sendFrame(cfg)
-			}
-		}
-	}()
-	return stop
-}
-
-func sendFrame(cfg StreamConfig) {
+// captureAndEncode grabs the current display image and returns base64 JPEG and mouse coords.
+func captureAndEncode(quality, display int) (b64 string, mx, my int, ok bool) {
 	num := screenshot.NumActiveDisplays()
 	if num <= 0 {
-		return
+		return "", 0, 0, false
 	}
-	d := cfg.Display
+	d := display
 	if d < 0 || d >= num {
 		d = 0
 	}
@@ -244,27 +156,21 @@ func sendFrame(cfg StreamConfig) {
 	img, err := screenshot.CaptureRect(bounds)
 	if err != nil {
 		// On some platforms capture can intermittently fail
-		return
+		return "", 0, 0, false
 	}
 
 	// JPEG encode
 	var buf bytes.Buffer
-	q := cfg.Quality
+	q := quality
 	if q <= 0 || q > 100 {
 		q = 80
 	}
 	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: q}); err != nil {
-		return
+		return "", 0, 0, false
 	}
-	b64 := base64.StdEncoding.EncodeToString(buf.Bytes())
-
+	b64 = base64.StdEncoding.EncodeToString(buf.Bytes())
 	x, y := input.GetMousePos()
-
-	cfg.Manager.BroadcastJSON(struct {
-		Image  string `json:"image"`
-		MouseX int    `json:"mouseX"`
-		MouseY int    `json:"mouseY"`
-	}{Image: b64, MouseX: x, MouseY: y})
+	return b64, x, y, true
 }
 
 func max(a, b int) int {
@@ -275,31 +181,44 @@ func max(a, b int) int {
 }
 
 func main() {
-	// Fixed configuration (no flags/args as requested)
-	addr := ":8080"
+	// Config
+	addr := ":8080" // for serving index.html on Mac
 	fps := 10
 	quality := 80
 	display := 0
+
+	mode := strings.ToLower(os.Getenv("MODE")) // "server" on Mac, "peer" on Windows
+	if mode == "" {
+		// Default to server to avoid accidentally driving input on local machine
+		mode = "server"
+	}
 
 	if os.Getenv("DISPLAY") == "" {
 		// Keep previous behavior if unset (useful for X on Linux)
 		os.Setenv("DISPLAY", ":0")
 	}
 
-	mgr := NewManager()
+	switch mode {
+	case "server":
+		runServer(addr)
+	case "peer":
+		if err := runPeer(fps, quality, display); err != nil {
+			log.Fatal(err)
+		}
+	default:
+		log.Fatalf("unknown MODE=%s (use 'server' or 'peer')", mode)
+	}
+}
 
+func runServer(addr string) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", serveIndex)
-	mux.HandleFunc("/ws", handleWS(mgr))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
 
 	srv := &http.Server{Addr: addr, Handler: mux}
-
-	// Start streamer loop
-	stopStream := StartStreamer(StreamConfig{FPS: fps, Quality: quality, Display: display, Manager: mgr})
 
 	// Run HTTP server
 	go func() {
@@ -313,13 +232,138 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	<-sigCh
-	log.Println("shutting down...")
-
-	close(stopStream)
+	log.Println("shutting down server...")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Println("server shutdown error:", err)
 	}
+}
+
+func runPeer(fps, quality, display int) error {
+	// Create PeerConnection with Google STUN
+	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{
+		ICEServers: []webrtc.ICEServer{{URLs: []string{"stun:stun.l.google.com:19302"}}},
+	})
+	if err != nil {
+		return fmt.Errorf("new pc: %w", err)
+	}
+	defer pc.Close()
+
+	// Channels
+	var framesDC *webrtc.DataChannel
+	inputReady := make(chan struct{})
+	framesReady := make(chan struct{})
+
+	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
+		label := dc.Label()
+		log.Println("data channel:", label)
+		switch label {
+		case "input":
+			dc.OnOpen(func() {
+				close(inputReady)
+			})
+			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
+				if msg.IsString {
+					var ev InputEvent
+					if err := json.Unmarshal(msg.Data, &ev); err == nil {
+						handleInput(ev)
+					}
+				}
+			})
+		case "frames":
+			framesDC = dc
+			dc.OnOpen(func() {
+				close(framesReady)
+			})
+		default:
+			// ignore
+		}
+	})
+
+	// Read remote offer (base64 JSON of SessionDescription)
+	fmt.Println("Paste base64 Offer (from browser) then press Enter, then Ctrl-D (EOF) if multi-line:")
+	offerB64, err := readAllStdin()
+	if err != nil {
+		return err
+	}
+	offerJSON, err := base64.StdEncoding.DecodeString(strings.TrimSpace(offerB64))
+	if err != nil {
+		return fmt.Errorf("decode offer b64: %w", err)
+	}
+	var offer webrtc.SessionDescription
+	if err := json.Unmarshal(offerJSON, &offer); err != nil {
+		return fmt.Errorf("unmarshal offer: %w", err)
+	}
+	if err := pc.SetRemoteDescription(offer); err != nil {
+		return fmt.Errorf("set remote: %w", err)
+	}
+
+	answer, err := pc.CreateAnswer(nil)
+	if err != nil {
+		return fmt.Errorf("create answer: %w", err)
+	}
+	gatherComplete := webrtc.GatheringCompletePromise(pc)
+	if err := pc.SetLocalDescription(answer); err != nil {
+		return fmt.Errorf("set local: %w", err)
+	}
+	<-gatherComplete
+	local := pc.LocalDescription()
+	ansJSON, _ := json.Marshal(local)
+	ansB64 := base64.StdEncoding.EncodeToString(ansJSON)
+	fmt.Println("Answer (base64). Copy back into browser:\n" + ansB64)
+
+	// Wait for frames channel ready
+	select {
+	case <-framesReady:
+		log.Println("frames channel ready; starting stream")
+	case <-time.After(30 * time.Second):
+		return fmt.Errorf("frames channel not opened by browser")
+	}
+
+	// Start streaming loop
+	stop := make(chan struct{})
+	go func() {
+		interval := time.Second / time.Duration(max(fps, 1))
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				b64, mx, my, ok := captureAndEncode(quality, display)
+				if !ok || framesDC == nil {
+					continue
+				}
+				payload, _ := json.Marshal(struct {
+					Image  string `json:"image"`
+					MouseX int    `json:"mouseX"`
+					MouseY int    `json:"mouseY"`
+				}{Image: b64, MouseX: mx, MouseY: my})
+				_ = framesDC.SendText(string(payload))
+			}
+		}
+	}()
+
+	// Keep running until interrupted
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	<-sigCh
+	close(stop)
+	return nil
+}
+
+func readAllStdin() (string, error) {
+	// Read a single line (most base64 offers will be single-line). If more data
+	// is piped in, read the rest.
+	reader := bufio.NewReader(os.Stdin)
+	line, err := reader.ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	// Drain remaining bytes if any
+	rest, _ := io.ReadAll(reader)
+	return line + string(rest), nil
 }
