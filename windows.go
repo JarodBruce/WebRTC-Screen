@@ -11,6 +11,8 @@ import (
 	"log"
 	"net"
 	"os"
+	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -162,6 +164,32 @@ func max(a, b int) int {
 }
 
 func runPeer(fps, quality, display int) error {
+	// Start periodic memory release based on env var CACHE_CLEAN_INTERVAL
+	stopMem := make(chan struct{})
+	startPeriodicMemoryRelease := func() {
+		intervalStr := os.Getenv("CACHE_CLEAN_INTERVAL")
+		if strings.TrimSpace(intervalStr) == "" {
+			intervalStr = "5m"
+		}
+		d, err := time.ParseDuration(intervalStr)
+		if err != nil || d <= 0 {
+			return
+		}
+		ticker := time.NewTicker(d)
+		go func() {
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					runtime.GC()
+					debug.FreeOSMemory()
+				case <-stopMem:
+					return
+				}
+			}
+		}()
+	}
+	startPeriodicMemoryRelease()
 	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{
 		ICEServers: []webrtc.ICEServer{{URLs: []string{"stun:stun.l.google.com:19302"}}},
 	})
@@ -169,6 +197,7 @@ func runPeer(fps, quality, display int) error {
 		return fmt.Errorf("new pc: %w", err)
 	}
 	defer pc.Close()
+	defer close(stopMem)
 
 	var framesDC *webrtc.DataChannel
 	framesReady := make(chan struct{})

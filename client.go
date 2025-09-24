@@ -14,6 +14,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -23,6 +25,7 @@ import (
 var embeddedFiles embed.FS
 
 func serveIndex(w http.ResponseWriter, r *http.Request) {
+	setNoCache(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	b, err := embeddedFiles.ReadFile("index.html")
 	if err != nil {
@@ -32,10 +35,47 @@ func serveIndex(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(b)
 }
 
+// setNoCache applies HTTP headers to prevent client-side caching.
+func setNoCache(w http.ResponseWriter) {
+	// Conservative no-cache headers
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+}
+
+// startPeriodicMemoryRelease runs GC and returns free memory to the OS at a fixed interval.
+// Controlled by env var CACHE_CLEAN_INTERVAL (e.g., "5m", "30s"). Set to "0" or empty to disable.
+func startPeriodicMemoryRelease(done <-chan struct{}) {
+	intervalStr := os.Getenv("CACHE_CLEAN_INTERVAL")
+	if strings.TrimSpace(intervalStr) == "" {
+		intervalStr = "5m"
+	}
+	d, err := time.ParseDuration(intervalStr)
+	if err != nil || d <= 0 {
+		// Disabled or invalid interval; do nothing
+		return
+	}
+	ticker := time.NewTicker(d)
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				// Trigger GC and attempt to return memory to the OS
+				runtime.GC()
+				debug.FreeOSMemory()
+			case <-done:
+				return
+			}
+		}
+	}()
+}
+
 func runServer(addr string) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", serveIndex)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		setNoCache(w)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
@@ -91,6 +131,7 @@ func runServer(addr string) {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
+		setNoCache(w)
 		var req struct {
 			offerB64 string
 			Offer    json.RawMessage
@@ -144,6 +185,10 @@ func runServer(addr string) {
 
 	srv := &http.Server{Addr: addr, Handler: mux}
 
+	// Start periodic memory release loop; stop it when server is shutting down
+	done := make(chan struct{})
+	startPeriodicMemoryRelease(done)
+
 	go func() {
 		log.Println("http server started on", addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -161,6 +206,7 @@ func runServer(addr string) {
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Println("server shutdown error:", err)
 	}
+	close(done)
 }
 
 // waitForPrefix reads UDP packets until one starting with the given prefix arrives, or timeout.
