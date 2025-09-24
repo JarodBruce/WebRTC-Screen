@@ -1,150 +1,64 @@
 package main
 
 import (
-	"bytes"
-	"encoding/base64"
-	"encoding/json"
-	"image/jpeg"
+	"context"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
-	"github.com/go-vgo/robotgo"
-	"github.com/gorilla/websocket"
-	"github.com/kbinani/screenshot"
+	"weblinuxgui/internal/clients"
+	"weblinuxgui/internal/server"
 )
 
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool {
-		return true
-	},
-}
-
-// Event struct for incoming messages from the client
-type Event struct {
-	Type          string   `json:"type"`
-	X             int      `json:"x"`
-	Y             int      `json:"y"`
-	Button        string   `json:"button"`
-	Key           string   `json:"key"`
-	KeyCode       int      `json:"keyCode"`
-	Modifiers     []string `json:"modifiers"`
-	DeltaY        int      `json:"deltaY"`
-	ClipboardText string   `json:"clipboardText"`
-}
-
-// ScreenUpdate struct for outgoing messages to the client
-type ScreenUpdate struct {
-	Image  string `json:"image"`
-	MouseX int    `json:"mouseX"`
-	MouseY int    `json:"mouseY"`
-}
-
-func serveHome(w http.ResponseWriter, r *http.Request) {
-	log.Println("Serving index.html")
-	http.ServeFile(w, r, "index.html")
-}
-
-func handleConnections(w http.ResponseWriter, r *http.Request) {
-	ws, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer ws.Close()
-	log.Println("Client Connected")
-
-	go handleInput(ws)
-	streamScreen(ws)
-}
-
-func handleInput(ws *websocket.Conn) {
-	for {
-		_, msg, err := ws.ReadMessage()
-		if err != nil {
-			log.Println("read error:", err)
-			break
-		}
-
-		var event Event
-		if err := json.Unmarshal(msg, &event); err != nil {
-			log.Println("error unmarshalling json:", err)
-			continue
-		}
-
-		switch event.Type {
-		case "mousemove":
-			robotgo.Move(event.X, event.Y)
-		case "mousedown":
-			robotgo.Toggle(event.Button, "down")
-		case "mouseup":
-			robotgo.Toggle(event.Button, "up")
-		case "keydown":
-			// robotgo doesn't handle all keys well (e.g. symbols).
-			// A more robust solution might be needed for special characters.
-			robotgo.KeyTap(event.Key, event.Modifiers)
-		case "keyup":
-			// Keyup is often not needed for KeyTap, but could be implemented
-			// with KeyToggle if necessary for specific applications (e.g. games).
-		case "wheel":
-			robotgo.Scroll(0, event.DeltaY)
-		case "paste":
-			robotgo.WriteAll(event.ClipboardText)
-		}
-	}
-}
-
-func streamScreen(ws *websocket.Conn) {
-	ticker := time.NewTicker(100 * time.Millisecond) // 10 FPS
-	defer ticker.Stop()
-
-	for range ticker.C {
-		bounds := screenshot.GetDisplayBounds(0)
-		img, err := screenshot.CaptureRect(bounds)
-		if err != nil {
-			log.Println("capture error:", err)
-			continue
-		}
-
-		buf := new(bytes.Buffer)
-		err = jpeg.Encode(buf, img, &jpeg.Options{Quality: 80})
-		if err != nil {
-			log.Println("jpeg encode error:", err)
-			continue
-		}
-
-		imgStr := base64.StdEncoding.EncodeToString(buf.Bytes())
-		mouseX, mouseY := robotgo.GetMousePos()
-
-		update := ScreenUpdate{
-			Image:  imgStr,
-			MouseX: mouseX,
-			MouseY: mouseY,
-		}
-
-		jsonUpdate, err := json.Marshal(update)
-		if err != nil {
-			log.Println("json marshal error:", err)
-			continue
-		}
-
-		err = ws.WriteMessage(websocket.TextMessage, jsonUpdate)
-		if err != nil {
-			log.Println("write error:", err)
-			break
-		}
-	}
-}
-
 func main() {
-	os.Setenv("DISPLAY", ":0")
+	// Fixed configuration (no flags/args as requested)
+	addr := ":8080"
+	fps := 10
+	quality := 80
+	display := 0
 
-	http.HandleFunc("/", serveHome)
-	http.HandleFunc("/ws", handleConnections)
+	if os.Getenv("DISPLAY") == "" {
+		// Keep previous behavior if unset
+		os.Setenv("DISPLAY", ":0")
+	}
 
-	log.Println("http server started on :8080")
-	err := http.ListenAndServe(":8080", nil)
-	if err != nil {
-		log.Fatal("ListenAndServe: ", err)
+	mgr := clients.NewManager()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", server.ServeIndex)
+	mux.HandleFunc("/ws", server.HandleWS(mgr))
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+
+	srv := &http.Server{Addr: addr, Handler: mux}
+
+	// Start streamer loop
+	stopStream := server.StartStreamer(server.Config{FPS: fps, Quality: quality, Display: display, Manager: mgr})
+
+	// Run HTTP server
+	go func() {
+		log.Println("http server started on", addr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatal("ListenAndServe:", err)
+		}
+	}()
+
+	// Graceful shutdown
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	<-sigCh
+	log.Println("shutting down...")
+
+	close(stopStream)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Println("server shutdown error:", err)
 	}
 }
